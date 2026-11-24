@@ -1,0 +1,20 @@
+{
+  "name": "synthese-pipeline",
+  "build": { "dockerfile": "Dockerfile" },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "charliermarsh.ruff",
+        "anthropic.claude-code"
+      ],
+      "settings": {
+        "editor.formatOnSave": true,
+        "python.testing.pytestEnabled": true
+      }
+    }
+  },
+  "postCreateCommand": "uv sync --group dev",
+  "remoteUser": "vscode"
+}

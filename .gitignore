@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.venv/
+.uv_cache/
+.ruff_cache/
+.pytest_cache/
+dist/
+build/
+*.egg-info/
+.DS_Store
+
+# Data — nooit echte data committen, alleen demo
+data/01-raw/*
+data/02-prepared/*
+data/03-output/*
+!data/*/demo/
