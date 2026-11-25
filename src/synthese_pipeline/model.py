@@ -16,6 +16,9 @@ komen in ``relations`` van het GMF; synthetiseren gaat dan met metasyn's ``Multi
 elke verwijzende waarde een synthetische sleutel is. De verwijzende kolom krijgt in het model de
 verdeling van de sleutel waarnaar hij verwijst (niet-uniek waar metasyn dat kent): er staat niets
 uit de verwijzende kolom zelf in het model.
+
+Een gefitte sleutel van gehele getallen (``core.unique_key``) begint in het GMF altijd bij
+:data:`KEY_OFFSET`: metasyn zou de kleinste sleutel uit de data bewaren, en daarmee het bereik.
 """
 
 from __future__ import annotations
@@ -67,6 +70,9 @@ from synthese_pipeline.storage import check_table_names
 TOOL_KEY = "synthese_pipeline"
 GMF_VERSION = "2.1"
 EXCLUDED_KIND = "freetext"
+KEY_DISTRIBUTION = "core.unique_key"
+# Beginwaarde van elke gefitte gehele sleutel in het GMF: vast, dus niet uit de data.
+KEY_OFFSET = 1
 
 log = logging.getLogger("synthese_pipeline")
 
@@ -193,7 +199,9 @@ def fit_tables(
                 name=name,
             )
         _log_warnings(name, caught, "het fitten")
-        gmf_tables.extend(_jsonable(metaframe.to_dict())["tables"])
+        fitted_tables = _jsonable(metaframe.to_dict())["tables"]
+        _reset_key_offsets(name, fitted_tables)
+        gmf_tables.extend(fitted_tables)
         table_info[name] = {"kolommen": column_info}
         if excluded_info:
             table_info[name]["uitgesloten"] = excluded_info
@@ -232,6 +240,33 @@ def fit_tables(
     if resolved:
         multiframe(gmf)
     return gmf
+
+
+def _reset_key_offsets(table: str, gmf_tables: list[dict[str, Any]]) -> None:
+    """Zet ``lower`` van elke gefitte sleutel (``core.unique_key``) op :data:`KEY_OFFSET`.
+
+    metasyn bewaart als ``lower`` de kleinste sleutel uit de data (met disclosure control een
+    waarde in de buurt). Het GMF verlaat de beveiligde omgeving, dus dat bereik mag er niet in.
+    Een verdeling met parameters uit de specificatie (``created_by = user``) blijft staan: die
+    komt niet uit de data. ``consecutive`` blijft zoals gefit: dat is een vorm, geen waarde.
+    """
+    count = 0
+    for item in gmf_tables:
+        for var in item["vars"]:
+            dist = var.get("distribution") or {}
+            if dist.get("name") != KEY_DISTRIBUTION:
+                continue
+            if (var.get("creation_method") or {}).get("created_by") == "user":
+                continue
+            dist["parameters"]["lower"] = KEY_OFFSET
+            count += 1
+    if count:
+        log.info(
+            "tabel '%s': %d sleutel(s) beginnen in het model bij %d, los van de data",
+            table,
+            count,
+            KEY_OFFSET,
+        )
 
 
 def _check_relation_kinds(

@@ -84,7 +84,7 @@ Elke kolom krijgt een soort. De tool leidt die af uit het datatype en de waarden
 |---|---|---|
 | `categorical` | waar/onwaar; een geheel getal met hooguit 12 unieke waarden of tekst met hooguit 30, en hooguit half zoveel unieke als ingevulde waarden (bijv. Likert 1-5, M/V) | een keuze uit de categorieën met hun kansen |
 | `freetext` | tekst die op vrije tekst lijkt: meer dan de helft van de ingevulde waarden heeft een spatie, of de waarden zijn gemiddeld minstens 20 tekens lang, en het is geen code (zie hieronder) | niets: de kolom gaat niet in het model en ontbreekt in de synthetische data |
-| `key` | geheel getal of tekst, geen lege waarden, alle waarden uniek, minstens 20 rijen | unieke waarden; bij een code een uniek patroon |
+| `key` | geheel getal of tekst, geen lege waarden, alle waarden uniek, minstens 20 rijen | unieke waarden vanaf 1 (zie [Privacy](#privacy)); bij een code een uniek patroon |
 | `discrete` | overige gehele getallen, ook kommagetallen die allemaal op ,0 eindigen | een verdeling van gehele getallen |
 | `continuous` | overige kommagetallen | een continue verdeling |
 | `date` | datum, datum met tijd, tijd | een verdeling van datums |
@@ -196,6 +196,7 @@ Zonder data is per kolom een verdeling nodig. Een `key` zonder verdeling wordt e
 - **Disclosure control staat standaard aan.** `fit` gebruikt de plugin [metasyn-disclosure](https://github.com/sodascience/metasyn-disclosure-control) (versie 0.3.3). Zeldzame waarden en uitschieters, zoals een leeftijd die maar bij één persoon voorkomt, komen dan niet letterlijk in het model. Het model (`synthese_pipeline.disclosure_control` en `provenance`) en het rapport vermelden of de plugin aan stond. Uitzetten kan met `--no-disclosure`; dat is afgeraden.
 - **Logs en rapporten bevatten geen waarden uit de data**, alleen tabelnamen, kolomnamen, datatypes, aantallen en scores. Met `--log PAD` schrijven `fit` en `synthesize` dezelfde regels ook naar een bestand. Een onverwachte fout toont alleen het soort fout, omdat de melding waarden kan bevatten.
 - **Vrije tekst gaat standaard niet in het model** (zie [Vrije tekst](#vrije-tekst)).
+- **Het model bevat geen sleutelbereik.** metasyn bewaart bij een sleutel van gehele getallen (soort `key`, verdeling `core.unique_key`) de kleinste waarde als `lower`. `fit` zet die altijd op de vaste waarde `lower = 1`, ook met `--no-disclosure` en ook bij een kolom die naar de sleutel verwijst. Het GMF verraadt dus geen sleutelbereik en geen echte sleutelwaarde. Synthetische sleutels blijven uniek, maar lijken niet meer op de echte: een studentnummer van 8 cijfers wordt een klein getal vanaf 1 (bij niet-opeenvolgende sleutels tot ongeveer 2× het aantal rijen). Een analyse die op de lengte of het bereik van een sleutel steunt, geeft op de synthetische data dus iets anders. Een sleutel met eigen `parameters` in een [specificatie](#specificatie) houdt die waarden.
 - **Een ontwerp-specificatie bevat geen waarden uit de data**, behalve met `--with-categories`. Omschrijvingen schrijft de instelling zelf: zet daar geen echte waarden in.
 - Het model zelf bevat wel samenvattingen van de data, zoals categorieën en grenzen. Lees het na met `toon` voordat het de beveiligde omgeving verlaat.
 
