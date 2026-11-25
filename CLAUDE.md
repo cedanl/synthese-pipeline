@@ -35,7 +35,16 @@ Rapporten en logbestanden bevatten alleen aantallen, scores en kolomnamen.
 ```
 src/synthese_pipeline/
 ├── __init__.py
-└── cli.py            # dun — commandoregel
+├── cli.py            # dun — commandoregel
+├── pipeline.py       # run_fit / run_synthesize (ook voor notebooks)
+├── storage.py        # inlezen/wegschrijven: CSV, Parquet, Delta, abfss
+├── column_types.py   # kolomsoorten afleiden → metasyn var_specs
+├── model.py          # GMF fitten, laden, synthetiseren
+├── privacy.py        # disclosure control, letterlijke kopieën
+├── report.py         # structuurcheck, verdelingsmaten, exitcodes
+├── describe.py       # `toon`
+├── logs.py           # logging zonder waarden
+└── errors.py
 tests/synthese_pipeline/   # spiegelt src/synthese_pipeline/
 data/
 ├── 01-raw/demo/      # alleen demo-data in git
@@ -55,4 +64,4 @@ uv run ruff format src tests
 
 ## Data
 
-Invoer: CSV, Parquet of SPSS (.sav). Uitvoer: een GMF-bestand (model) en synthetische data in hetzelfde formaat als de invoer. Echte data staat nooit in git; alleen `data/*/demo/`.
+Invoer: CSV, Parquet of Delta (map of `abfss://`); SPSS (.sav) nog niet (#7). Uitvoer: een GMF-bestand (model) en synthetische data als Delta, Parquet of CSV, met een rapport. Echte data staat nooit in git; alleen `data/*/demo/`.
