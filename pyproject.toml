@@ -6,8 +6,11 @@ readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.12"
 dependencies = [
-    "metasyn>=3,<4",
-    "polars>=1",
+    "deltalake>=1",
+    "metasyn==3.1.0",
+    "metasyn-disclosure==0.3.3",
+    "polars>=1.24",
+    "scipy>=1.11",
 ]
 
 [project.scripts]
