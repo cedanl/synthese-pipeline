@@ -8,7 +8,9 @@ en daarna per kolom omgezet (zie :func:`infer_text_column`), zodat codes met voo
 from __future__ import annotations
 
 import os
-from pathlib import Path
+from collections.abc import Iterable
+from pathlib import Path, PureWindowsPath
+from typing import TypeGuard
 
 import polars as pl
 
@@ -50,6 +52,37 @@ def fabric_storage_options(bearer_token: str | None = None) -> dict[str, str]:
     if token:
         options["bearer_token"] = token
     return options
+
+
+def _is_safe_table_name(name: object) -> TypeGuard[str]:
+    if not isinstance(name, str) or name in ("", ".", ".."):
+        return False
+    if any(char in name for char in ("/", "\\", "\0")):
+        return False
+    return not PureWindowsPath(name).drive
+
+
+def check_table_names(names: Iterable[object]) -> None:
+    """Weiger tabelnamen die geen gewone map- of bestandsnaam zijn.
+
+    Bij het wegschrijven wordt een tabelnaam een map- of bestandsnaam in het doel. De namen
+    komen uit het model, en dat is een JSON-bestand dat met de hand kan zijn aangepast. Zonder
+    deze controle zou een naam als ``../bron`` of een absoluut pad buiten het doel schrijven.
+    Een naam mag dus niet leeg, ``.`` of ``..`` zijn, geen ``/``, ``\\`` of NUL-teken bevatten
+    en niet met een schijfletter beginnen; elke naam komt één keer voor. De melding noemt
+    alleen het volgnummer van de tabel, niet de naam.
+    """
+    seen: set[str] = set()
+    for number, name in enumerate(names, start=1):
+        if not _is_safe_table_name(name):
+            raise SyntheseError(
+                f"Tabel {number} heeft een ongeldige naam. Een tabelnaam wordt een map- of "
+                "bestandsnaam in het doel: niet leeg, niet '.' of '..', zonder '/', '\\' of "
+                "NUL-teken en zonder schijfletter."
+            )
+        if name in seen:
+            raise SyntheseError(f"Tabel {number} heeft dezelfde naam als een eerdere tabel.")
+        seen.add(name)
 
 
 def table_name_from_uri(uri: str) -> str:
@@ -218,8 +251,11 @@ def write_tables(
       ``<map>/<tabel>.parquet`` / ``<map>/<tabel>.csv``.
     - ``abfss://``: per tabel een Delta-tabel ``<pad>/<tabel>``.
 
-    Bestaande uitvoer wordt overschreven.
+    Bestaande uitvoer wordt overschreven. Er wordt nooit buiten het doel geschreven: een
+    ongeldige tabelnaam (zie :func:`check_table_names`) of een symbolische link in de doelmap
+    die naar buiten wijst, geeft een fout voordat er iets is geschreven.
     """
+    check_table_names(tables)
     kind = resolve_format(target, fmt)
     if is_remote(target):
         if kind != "delta":
@@ -245,17 +281,21 @@ def write_tables(
         _write_file(df, path, kind)
         return {next(iter(tables)): str(path)}
 
+    outs = {name: path / (name if kind == "delta" else f"{name}.{kind}") for name in tables}
+    root = path.resolve()
+    for number, out in enumerate(outs.values(), start=1):
+        if out.resolve().parent != root:
+            raise SyntheseError(
+                f"Tabel {number} zou buiten de doelmap {path} komen (via een symbolische link). "
+                "Kies een ander doel."
+            )
     path.mkdir(parents=True, exist_ok=True)
-    written = {}
     for name, df in tables.items():
         if kind == "delta":
-            out = path / name
-            _write_delta(df, str(out), None)
+            _write_delta(df, str(outs[name]), None)
         else:
-            out = path / f"{name}.{kind}"
-            _write_file(df, out, kind)
-        written[name] = str(out)
-    return written
+            _write_file(df, outs[name], kind)
+    return {name: str(out) for name, out in outs.items()}
 
 
 def _write_delta(df: pl.DataFrame, uri: str, storage_options: dict[str, str] | None) -> None:

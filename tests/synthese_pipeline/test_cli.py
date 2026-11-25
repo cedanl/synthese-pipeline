@@ -152,6 +152,25 @@ def test_exit_code_error_and_usage(tmp_path, capsys):
     assert main([]) == EXIT_USAGE
 
 
+@pytest.mark.parametrize("fmt", ["csv", "delta"])
+def test_synthesize_refuses_model_with_table_name_outside_target(fitted, capsys, fmt):
+    # Een met de hand aangepast model mag niet buiten het doel schrijven, zoals over de bron.
+    work, data, model = fitted
+    before = data.read_bytes()
+    gmf = json.loads(model.read_text())
+    gmf["tables"][0]["name"] = "../data" if fmt == "csv" else str(work / "elders")
+    edited = work / "bewerkt.json"
+    edited.write_text(json.dumps(gmf))
+    code = main(["synthesize", str(edited), str(work / "uit"), "--format", fmt, "--seed", "1"])
+    assert code == EXIT_ERROR
+    assert data.read_bytes() == before
+    assert not (work / "uit").exists()
+    assert not (work / "elders").exists()
+    err = capsys.readouterr().err
+    assert "ongeldige naam" in err
+    assert gmf["tables"][0]["name"] not in err
+
+
 def test_type_override_on_fit(tmp_path, capsys):
     data = tmp_path / "data.csv"
     students().write_csv(data)

@@ -116,6 +116,49 @@ def test_write_parquet_and_csv_folder(tmp_path):
     assert (tmp_path / "c" / "resultaten.csv").is_file()
 
 
+# Een tabelnaam komt uit het model en wordt een map- of bestandsnaam in het doel.
+UNSAFE_TABLE_NAMES = ["", ".", "..", "../buiten", "a/b", "a\\b", "C:buiten", "nul\0teken"]
+
+
+@pytest.mark.parametrize("fmt", storage.OUTPUT_FORMATS)
+@pytest.mark.parametrize("name", [*UNSAFE_TABLE_NAMES, "ABSOLUUT"])
+def test_table_names_that_are_paths_are_refused(tmp_path, fmt, name):
+    if name == "ABSOLUUT":
+        name = str(tmp_path / "elders" / "studenten")
+    target = tmp_path / "doel" / "uit"
+    with pytest.raises(SyntheseError, match="ongeldige naam"):
+        storage.write_tables({"goed": results(), name: results()}, target, fmt=fmt)
+    # Niets geschreven: niet buiten het doel, en ook de goede tabel en de doelmap niet.
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("fmt", storage.OUTPUT_FORMATS)
+def test_write_through_symlink_outside_target_is_refused(tmp_path, fmt):
+    outside = tmp_path / "elders"
+    outside.mkdir()
+    target = tmp_path / "uit"
+    target.mkdir()
+    entry = "studenten" if fmt == "delta" else f"studenten.{fmt}"
+    (target / entry).symlink_to(outside / entry, target_is_directory=fmt == "delta")
+    with pytest.raises(SyntheseError, match="buiten de doelmap"):
+        storage.write_tables({"studenten": results()}, target, fmt=fmt)
+    assert list(outside.iterdir()) == []
+
+
+@pytest.mark.parametrize("name", ["../lh-bron/Tables/studenten", "", ".."])
+def test_abfss_write_refuses_table_names_that_are_paths(monkeypatch, name):
+    calls = []
+
+    def fake_write_delta(self, uri, **kwargs):
+        calls.append(uri)
+
+    monkeypatch.setattr(pl.DataFrame, "write_delta", fake_write_delta)
+    target = "abfss://ws-id@onelake.dfs.fabric.microsoft.com/lh-synth/Tables"
+    with pytest.raises(SyntheseError, match="ongeldige naam"):
+        storage.write_tables({"goed": results(), name: results()}, target)
+    assert calls == []
+
+
 def test_single_file_target_needs_one_table(tmp_path):
     with pytest.raises(SyntheseError, match="2 tabellen"):
         storage.write_tables({"a": results(), "b": results()}, tmp_path / "uit.csv")

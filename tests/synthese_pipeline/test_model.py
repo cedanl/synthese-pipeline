@@ -1,11 +1,13 @@
 """Tests voor fitten en synthetiseren met metasyn (kolomtypes, disclosure, reproduceerbaarheid)."""
 
+import copy
 import json
 
 import polars as pl
 import pytest
 
 from synthese_pipeline import model
+from synthese_pipeline.errors import SyntheseError
 from tests.synthese_pipeline.dummy import OUTLIER_AGE, SENTINEL, results, students
 
 
@@ -121,8 +123,6 @@ def test_multiple_tables_in_one_model(tmp_path):
 
 
 def test_load_model_errors(tmp_path):
-    from synthese_pipeline.errors import SyntheseError
-
     with pytest.raises(SyntheseError, match="bestaat niet"):
         model.load_model(tmp_path / "geen.json")
     bad = tmp_path / "kapot.json"
@@ -133,6 +133,42 @@ def test_load_model_errors(tmp_path):
     wrong.write_text('{"gmf_version": "2.1", "tables": [{"vars": 3}]}')
     with pytest.raises(SyntheseError, match="geen geldig GMF"):
         model.load_model(wrong)
+
+
+MISSING = object()
+
+
+@pytest.mark.parametrize("name", ["../raw/studenten", "ABSOLUUT", "", "..", 5, MISSING])
+def test_load_model_refuses_table_names_that_are_paths(gmf, tmp_path, name):
+    # Het model kan buiten de beveiligde omgeving met de hand zijn aangepast.
+    if name == "ABSOLUUT":
+        name = str(tmp_path / "elders" / "studenten")
+    edited = copy.deepcopy(gmf)
+    if name is MISSING:
+        del edited["tables"][0]["name"]
+    else:
+        edited["tables"][0]["name"] = name
+    path = tmp_path / "model.json"
+    model.save_model(edited, path)
+    with pytest.raises(SyntheseError, match="ongeldige naam") as info:
+        model.load_model(path)
+    if isinstance(name, str) and "/" in name:
+        # De melding noemt de naam uit het model niet.
+        assert name not in str(info.value)
+
+
+def test_load_model_refuses_duplicate_table_names(gmf, tmp_path):
+    edited = copy.deepcopy(gmf)
+    edited["tables"].append(copy.deepcopy(edited["tables"][0]))
+    path = tmp_path / "model.json"
+    model.save_model(edited, path)
+    with pytest.raises(SyntheseError, match="dezelfde naam"):
+        model.load_model(path)
+
+
+def test_fit_refuses_table_names_that_are_paths():
+    with pytest.raises(SyntheseError, match="ongeldige naam"):
+        model.fit_tables({"..": students()})
 
 
 def test_other_dtypes_are_restored():

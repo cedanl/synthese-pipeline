@@ -33,6 +33,7 @@ from synthese_pipeline.column_types import (
 )
 from synthese_pipeline.errors import SyntheseError
 from synthese_pipeline.privacy import disclosure_info, disclosure_privacy
+from synthese_pipeline.storage import check_table_names
 
 TOOL_KEY = "synthese_pipeline"
 GMF_VERSION = "2.1"
@@ -69,6 +70,7 @@ def fit_tables(
 ) -> dict[str, Any]:
     """Fit per tabel een metasyn-model en geef het GMF als dict terug."""
     overrides = overrides or {}
+    check_table_names(tables)
     check_overrides(overrides, tables)
     privacy = disclosure_privacy() if disclosure else None
     disclosure_block = disclosure_info(privacy)
@@ -133,7 +135,11 @@ def save_model(gmf: dict[str, Any], path: str | Path) -> None:
 
 
 def load_model(path: str | Path) -> dict[str, Any]:
-    """Lees en controleer een GMF-bestand."""
+    """Lees en controleer een GMF-bestand.
+
+    Naast het GMF-schema worden de tabelnamen gecontroleerd (:func:`check_table_names`): die
+    worden bij ``synthesize`` map- of bestandsnamen, en het model kan met de hand zijn aangepast.
+    """
     source = Path(path)
     if not source.is_file():
         raise SyntheseError(f"Het model bestaat niet: {source}")
@@ -143,9 +149,14 @@ def load_model(path: str | Path) -> dict[str, Any]:
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise SyntheseError(f"Het model is geen geldig JSON-bestand: {source}") from exc
     try:
-        return parse_gmf_dict(raw, validate=True)
+        gmf = parse_gmf_dict(raw, validate=True)
     except Exception as exc:
         raise SyntheseError(f"Het model is geen geldig GMF-bestand: {source}") from exc
+    try:
+        check_table_names(table.get("name") for table in gmf["tables"])
+    except SyntheseError as exc:
+        raise SyntheseError(f"Het model is niet bruikbaar: {source}. {exc}") from None
+    return gmf
 
 
 def metaframes(gmf: dict[str, Any]) -> dict[str, MetaFrame]:
