@@ -4,7 +4,21 @@ version = "0.1.0"
 description = "Synthetische data maken als stap in een datapipeline, met behoud van structuur"
 readme = "README.md"
 license = { text = "MIT" }
-requires-python = ">=3.12"
+authors = [{ name = "CEDA" }]
+keywords = ["synthetische data", "synthetic data", "metasyn", "privacy", "onderwijsdata", "datapipeline"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Natural Language :: Dutch",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+]
+requires-python = ">=3.12,<3.14"
 dependencies = [
     "deltalake>=1",
     "faker==40.63.0",
@@ -19,7 +33,10 @@ dependencies = [
 synthese-pipeline = "synthese_pipeline.cli:main"
 
 [project.urls]
+Homepage = "https://github.com/cedanl/synthese-pipeline"
+Documentation = "https://github.com/cedanl/synthese-pipeline#readme"
 Repository = "https://github.com/cedanl/synthese-pipeline"
+Issues = "https://github.com/cedanl/synthese-pipeline/issues"
 
 [build-system]
 requires = ["hatchling"]
@@ -37,9 +54,10 @@ dev = [
 
 [tool.ruff]
 line-length = 100
+target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "F", "I"]
+select = ["E", "F", "I", "N", "W", "UP"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["synthese_pipeline"]

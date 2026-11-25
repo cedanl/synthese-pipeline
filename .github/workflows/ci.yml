@@ -8,7 +8,16 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      PYTHONUTF8: "1"
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
 
@@ -24,8 +33,27 @@ jobs:
       - name: Format check
         run: uv run ruff format --check src tests
 
+      - name: Type check
+        run: uv run ty check
+
       - name: Tests
         run: uv run pytest
 
       - name: Data-free example
-        run: uv run synthese-pipeline synthesize --spec examples/spec.toml --rows 100 --format csv /tmp/out
+        run: >-
+          uv run synthese-pipeline synthesize --spec examples/spec.toml --rows 100 --format csv
+          "${{ runner.temp }}/out"
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Build
+        run: uv build
+
+      - name: Check package metadata
+        run: uvx twine check --strict dist/*
