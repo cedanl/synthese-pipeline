@@ -253,10 +253,13 @@ def _faker():
     return Faker(FAKER_LOCALE)
 
 
-def check_faker_provider(provider: str) -> None:
-    """Geef een fout als ``provider`` geen Faker-provider is die tekst maakt."""
+def check_faker_provider(provider: str, option: str = "--faker") -> None:
+    """Geef een fout als ``provider`` geen Faker-provider is die tekst maakt.
+
+    ``option`` zegt in de melding waar de provider vandaan komt (``--faker`` of de specificatie).
+    """
     message = (
-        f"Onbekende Faker-provider '{provider}' in --faker. Kies een provider die tekst maakt, "
+        f"Onbekende Faker-provider '{provider}' in {option}. Kies een provider die tekst maakt, "
         "bijv. name, first_name, last_name, email, city, street_address, sentence of text."
     )
     if not _PROVIDER_NAME.match(provider) or provider.startswith("seed"):
@@ -324,9 +327,15 @@ def kinds_for_table(
     df: pl.DataFrame,
     overrides: dict[str, str],
     fakers: dict[str, str] | None = None,
+    spec_kinds: dict[str, str] | None = None,
 ) -> dict[str, str]:
-    """Soort per kolom: ``--faker``, dan ``tabel.kolom``, dan ``kolom``, anders afgeleid."""
+    """Soort per kolom: ``--faker``, dan ``tabel.kolom``, dan ``kolom``, anders afgeleid.
+
+    ``spec_kinds`` (soort per kolom uit de specificatie) komt na ``--faker`` en ``--type`` en
+    vóór de afgeleide soort.
+    """
     faker_types = faker_types_for_table(table, df, fakers)
+    spec_kinds = spec_kinds or {}
     kinds = {}
     for column in df.columns:
         if column in faker_types:
@@ -338,7 +347,7 @@ def kinds_for_table(
                 f"Kolom '{column}' heeft soort 'faker' maar geen provider: gebruik --faker "
                 f"{column}=<provider>, bijv. --faker {column}=name."
             )
-        kinds[column] = override or infer_kind(df[column])
+        kinds[column] = override or spec_kinds.get(column) or infer_kind(df[column])
     return kinds
 
 
