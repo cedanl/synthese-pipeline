@@ -175,8 +175,17 @@ def run_synthesize(
         synthetic=synthetic,
         real=real,
         seed=used_seed,
+        relations=gmf.get("relations") or [],
     )
     write_report(report, report_path)
+    for entry in report["relaties"]:
+        log.info(
+            "relatie '%s': %s rijen gecontroleerd, %s wezen, %s dubbele sleutels",
+            entry["relatie"],
+            entry["rijen_gecontroleerd"],
+            entry["wezen"],
+            entry["dubbele_sleutels"],
+        )
     log.info(
         "rapport geschreven; structuur gelijk: %s; letterlijke kopieën: %s; exitcode %d",
         "ja" if report["structuur"]["gelijk"] else "nee",

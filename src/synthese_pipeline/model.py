@@ -10,6 +10,12 @@ Met een specificatie (:mod:`synthese_pipeline.spec`) gelden bij het fitten de so
 verdelingen, omschrijvingen, uitgesloten kolommen en ``n_rows`` daaruit; ``--type`` en
 ``--faker`` gaan voor. :func:`data_free_model` maakt een model uit alleen de specificatie,
 zonder data (``data_free``).
+
+Relaties tussen tabellen uit de specificatie (``tabel_a[kolom] SUBSET OF tabel_b[kolom]``)
+komen in ``relations`` van het GMF; synthetiseren gaat dan met metasyn's ``MultiFrame``, zodat
+elke verwijzende waarde een synthetische sleutel is. De verwijzende kolom krijgt in het model de
+verdeling van de sleutel waarnaar hij verwijst (niet-uniek waar metasyn dat kent): er staat niets
+uit de verwijzende kolom zelf in het model.
 """
 
 from __future__ import annotations
@@ -27,6 +33,8 @@ import numpy as np
 import polars as pl
 from metasyn import MetaFrame
 from metasyn.gmf import parse_gmf_dict, validate_gmf_dict
+from metasyn.multiframe import ColumnRelation, MultiFrame, RelationType
+from metasyn.registry import DistributionRegistry
 from metasyn.util import set_global_seeds
 from metasyn.var import MetaVar
 
@@ -44,8 +52,11 @@ from synthese_pipeline.column_types import (
 from synthese_pipeline.errors import SyntheseError
 from synthese_pipeline.privacy import PLUGIN_NAME, disclosure_info, disclosure_privacy
 from synthese_pipeline.spec import (
+    INFER,
     SINGLE_VERSION,
+    SUBSET,
     ColumnSpec,
+    Relation,
     Spec,
     data_free_var,
     fit_var_spec,
@@ -102,11 +113,15 @@ def fit_tables(
     check_overrides(fakers, tables, option="--faker")
     check_faker_conflicts(overrides, fakers)
     table_specs = spec.match_tables(tables) if spec is not None else {}
+    relations = spec.source_relations(table_specs) if spec is not None else []
+    referenced = {(rel.ref_table, rel.ref_column): rel for rel in relations}
+    referencing = {(rel.table, rel.column): rel for rel in relations}
     privacy = disclosure_privacy() if disclosure else None
     disclosure_block = disclosure_info(privacy)
 
     gmf_tables: list[dict[str, Any]] = []
     table_info: dict[str, Any] = {}
+    key_columns: dict[tuple[str, str], pl.Series] = {}
     for name, df in tables.items():
         table_spec = table_specs.get(name)
         column_specs = table_spec.columns if table_spec is not None else {}
@@ -128,6 +143,7 @@ def fit_tables(
                     )
             elif col.faker is not None:
                 faker_types[column] = col.faker
+        _check_relation_kinds(name, kinds, referenced, referencing)
         excluded = [column for column in df.columns if kinds[column] == EXCLUDED_KIND]
         if len(excluded) == df.width:
             raise SyntheseError(
@@ -152,6 +168,8 @@ def fit_tables(
                 df[column], kinds[column], faker_type=faker_types.get(column)
             )
             columns.append(prepared)
+            if (name, column) in referenced or (name, column) in referencing:
+                key_columns[(name, column)] = prepared
             if col_spec is not None:
                 var_spec = fit_var_spec(
                     var_spec, col_spec, kinds[column], use_model=column not in from_cli
@@ -187,6 +205,9 @@ def fit_tables(
             )
         log.info("tabel '%s': %d rijen, %d kolommen gefit", name, df.height, fit_df.width)
 
+    resolved = [_resolve_relation(rel, key_columns) for rel in relations]
+    _apply_relations(gmf_tables, table_info, resolved)
+
     gmf = {
         "gmf_version": GMF_VERSION,
         "provenance": {
@@ -199,7 +220,7 @@ def fit_tables(
                 else "uit"
             ),
         },
-        "relations": [],
+        "relations": [rel.to_dict() for rel in resolved],
         "tables": gmf_tables,
         TOOL_KEY: {
             "versie": __version__,
@@ -208,7 +229,119 @@ def fit_tables(
         },
     }
     validate_gmf_dict(gmf)
+    if resolved:
+        multiframe(gmf)
     return gmf
+
+
+def _check_relation_kinds(
+    table: str,
+    kinds: dict[str, str],
+    referenced: dict[tuple[str, str], Relation],
+    referencing: dict[tuple[str, str], Relation],
+) -> None:
+    """Een sleutel waarnaar verwezen wordt is soort ``key``; geen relatiekolom is uitgesloten."""
+    for column, kind in kinds.items():
+        if (table, column) in referenced and kind != "key":
+            raise SyntheseError(
+                f"Relatie '{referenced[(table, column)]}': kolom '{column}' in tabel '{table}' "
+                f"is de sleutel waarnaar verwezen wordt en moet soort key zijn, niet {kind}."
+            )
+        if (table, column) in referencing and kind == EXCLUDED_KIND:
+            raise SyntheseError(
+                f"Relatie '{referencing[(table, column)]}': kolom '{column}' in tabel '{table}' "
+                "is uitgesloten (vrije tekst); geef hem met --type een soort."
+            )
+
+
+def _resolve_relation(relation: Relation, key_columns: dict[tuple[str, str], pl.Series]):
+    """Maak een relatie voor metasyn; ``INFER FROM`` wordt afgeleid uit de data.
+
+    Telt verwijzende waarden zonder sleutel in de bron (alleen het aantal in het log).
+    """
+    primary = key_columns[(relation.ref_table, relation.ref_column)].cast(pl.String)
+    foreign = key_columns[(relation.table, relation.column)].cast(pl.String)
+    known = primary.drop_nulls().unique().implode()
+    orphans = int(foreign.drop_nulls().is_in(known).not_().sum())
+    kind = relation.kind
+    if kind == INFER:
+        if orphans:
+            raise SyntheseError(
+                f"Relatie '{relation}': {orphans} waarden in de verwijzende kolom staan niet in "
+                f"de sleutel; metasyn kan het soort relatie niet afleiden. Gebruik {SUBSET} als "
+                "dat klopt."
+            )
+        if foreign.null_count() == 0 and foreign.len() == primary.len():
+            if (foreign == primary).all():
+                kind = str(RelationType.EqualOrdered)
+            elif (foreign.sort() == primary.sort()).all():
+                kind = str(RelationType.Equal)
+            else:
+                kind = SUBSET
+        else:
+            kind = SUBSET
+        log.info("relatie '%s': afgeleid als %s", relation, kind)
+    elif orphans:
+        log.info(
+            "relatie '%s': %d waarden in de bron zonder sleutel; in de synthetische data "
+            "verwijst elke waarde naar een sleutel",
+            relation,
+            orphans,
+        )
+    return _column_relation(relation, kind)
+
+
+def _column_relation(relation: Relation, kind: str) -> ColumnRelation:
+    return ColumnRelation(
+        foreign_table=relation.table,
+        foreign_key=relation.column,
+        primary_table=relation.ref_table,
+        primary_key=relation.ref_column,
+        relation_type=RelationType.parse(kind),
+    )
+
+
+def _find_var(gmf_tables: list[dict[str, Any]], table: str, column: str) -> dict[str, Any]:
+    for item in gmf_tables:
+        if item["name"] == table:
+            for var in item["vars"]:
+                if var["name"] == column:
+                    return var
+    raise SyntheseError(f"Kolom '{column}' in tabel '{table}' staat niet in het model.")
+
+
+def _foreign_distribution(primary_var: dict[str, Any]) -> dict[str, Any]:
+    """De verdeling van de sleutel, niet-uniek als metasyn die versie kent.
+
+    De waarden van de verwijzende kolom komen bij het synthetiseren altijd uit de sleutel; deze
+    verdeling zorgt alleen dat er niets uit de verwijzende kolom zelf in het model staat.
+    """
+    dist = primary_var["distribution"]
+    if not dist.get("unique"):
+        return json.loads(json.dumps(dist))
+    try:
+        registry = DistributionRegistry.parse(None)
+        dist_class = registry.find_distribution(
+            name=dist["name"], dtype=primary_var["dtype"], unique=False, version=dist.get("version")
+        )
+        return _jsonable(dist_class.from_dict(dist).to_dict())
+    except Exception:
+        return json.loads(json.dumps(dist))
+
+
+def _apply_relations(
+    gmf_tables: list[dict[str, Any]], table_info: dict[str, Any], relations: list[ColumnRelation]
+) -> None:
+    """Geef elke verwijzende kolom de verdeling en het type van zijn sleutel."""
+    for rel in relations:
+        primary = _find_var(gmf_tables, rel.primary_table, rel.primary_key)
+        foreign = _find_var(gmf_tables, rel.foreign_table, rel.foreign_key)
+        foreign["dtype"] = primary["dtype"]
+        foreign["prop_missing"] = 0.0
+        foreign["distribution"] = _foreign_distribution(primary)
+        info = table_info[rel.foreign_table]["kolommen"][rel.foreign_key]
+        info["verwijst_naar"] = f"{rel.primary_table}[{rel.primary_key}]"
+        log.info("relatie '%s'", rel)
 
 
 def _cli_columns(
@@ -222,12 +355,17 @@ def _cli_columns(
     }
 
 
-def _data_free_var(table: str, column: ColumnSpec, n_rows: int) -> MetaVar:
-    """Maak één kolom met metasyn uit alleen de specificatie en trek er één proefwaarde uit."""
+def _data_free_var(
+    table: str, column: ColumnSpec, n_rows: int, var: dict[str, Any] | None = None
+) -> MetaVar:
+    """Maak één kolom met metasyn uit alleen de specificatie en trek er één proefwaarde uit.
+
+    ``var`` is de kolom voor metasyn als die al klaar is; anders komt hij uit ``column``.
+    """
     config = {
         "config_version": SINGLE_VERSION,
         "n_rows": n_rows,
-        "var": [data_free_var(table, column)],
+        "var": [var if var is not None else data_free_var(table, column)],
     }
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -245,6 +383,25 @@ def _data_free_var(table: str, column: ColumnSpec, n_rows: int) -> MetaVar:
     return metaframe.meta_vars[0]
 
 
+def _data_free_foreign_var(
+    table: str, column: ColumnSpec, primary: ColumnSpec, relation: Relation, n_rows: int
+) -> MetaVar:
+    """Een verwijzende kolom zonder eigen verdeling krijgt die van de sleutel (niet-uniek)."""
+    var = data_free_var(relation.ref_table, primary)
+    var["name"] = column.name
+    var["prop_missing"] = 0.0
+    var.pop("description", None)
+    if column.description:
+        var["description"] = column.description
+    var["distribution"]["unique"] = False
+    try:
+        return _data_free_var(table, column, n_rows, var)
+    except SyntheseError:
+        # metasyn kent sommige sleutelverdelingen (core.unique_key) alleen uniek.
+        var["distribution"]["unique"] = True
+        return _data_free_var(table, column, n_rows, var)
+
+
 def data_free_model(spec: Spec, *, rows: int | None = None) -> dict[str, Any]:
     """Maak een GMF uit alleen de specificatie, zonder data (data-free).
 
@@ -255,6 +412,8 @@ def data_free_model(spec: Spec, *, rows: int | None = None) -> dict[str, Any]:
     """
     gmf_tables: list[dict[str, Any]] = []
     table_info: dict[str, Any] = {}
+    specs_by_name = dict(zip(spec.table_names(), spec.tables, strict=True))
+    referencing = {(rel.table, rel.column): rel for rel in spec.relations}
     for table_spec, name in zip(spec.tables, spec.table_names(), strict=True):
         n_rows = rows if rows is not None else table_spec.n_rows
         if n_rows is None:
@@ -270,14 +429,31 @@ def data_free_model(spec: Spec, *, rows: int | None = None) -> dict[str, Any]:
                 if column.description:
                     excluded_info[column.name]["omschrijving"] = column.description
                 continue
-            meta_var = _data_free_var(name, column, n_rows)
+            relation = referencing.get((name, column.name))
+            own = column.distribution is not None and "name" in column.distribution
+            if relation is not None and not own:
+                primary = specs_by_name[relation.ref_table].columns[relation.ref_column]
+                meta_var = _data_free_foreign_var(name, column, primary, relation, n_rows)
+            else:
+                meta_var = _data_free_var(name, column, n_rows)
             meta_vars.append(meta_var)
             var_dict = meta_var.to_dict()
             dtype = column.dtype or str(var_dict["dtype"]).split("(")[0]
+            kind_dict = var_dict
+            if relation is not None:
+                # Een verwijzende kolom is geen unieke sleutel, ook als hij die verdeling deelt.
+                kind_dict = {
+                    **var_dict,
+                    "distribution": {**var_dict["distribution"], "unique": False},
+                }
             column_info[column.name] = {
-                "soort": column.kind or kind_from_var(var_dict),
+                "soort": column.kind or kind_from_var(kind_dict),
                 "brontype": dtype_to_dict(dtype_from_dict({"naam": dtype})),
             }
+            if relation is not None:
+                column_info[column.name]["verwijst_naar"] = (
+                    f"{relation.ref_table}[{relation.ref_column}]"
+                )
             log.info(
                 "tabel '%s', kolom '%s': soort %s (zonder data)",
                 name,
@@ -308,7 +484,7 @@ def data_free_model(spec: Spec, *, rows: int | None = None) -> dict[str, Any]:
             "synthese-pipeline": __version__,
             "disclosure control": "niet van toepassing (data-free)",
         },
-        "relations": [],
+        "relations": [_data_free_relation(rel).to_dict() for rel in spec.relations],
         "tables": gmf_tables,
         TOOL_KEY: {
             "versie": __version__,
@@ -323,7 +499,16 @@ def data_free_model(spec: Spec, *, rows: int | None = None) -> dict[str, Any]:
         },
     }
     validate_gmf_dict(gmf)
+    if spec.relations:
+        multiframe(gmf)
     return gmf
+
+
+def _data_free_relation(relation: Relation) -> ColumnRelation:
+    """Zonder data valt er niets af te leiden: ``INFER FROM`` wordt ``SUBSET OF``."""
+    if relation.kind == INFER:
+        log.info("relatie '%s': zonder data geldt %s", relation, SUBSET)
+    return _column_relation(relation, SUBSET if relation.kind == INFER else relation.kind)
 
 
 def save_model(gmf: dict[str, Any], path: str | Path) -> None:
@@ -365,6 +550,33 @@ def metaframes(gmf: dict[str, Any]) -> dict[str, MetaFrame]:
     return {
         table["name"]: MetaFrame.from_dict(gmf, table_name=table["name"]) for table in gmf["tables"]
     }
+
+
+def gmf_relations(gmf: dict[str, Any]) -> list[ColumnRelation]:
+    """De relaties tussen tabellen in het GMF; leeg bij een model zonder relaties."""
+    try:
+        return [ColumnRelation.from_dict(rel) for rel in gmf.get("relations") or []]
+    except (KeyError, TypeError, ValueError):
+        raise SyntheseError("Het model bevat een ongeldige relatie tussen tabellen.") from None
+
+
+def multiframe(gmf: dict[str, Any]) -> MultiFrame:
+    """Een metasyn-``MultiFrame`` met alle tabellen en de relaties uit het GMF."""
+    rels = gmf_relations(gmf)
+    for rel in rels:
+        if rel.relation_type == RelationType.Infer:
+            raise SyntheseError(
+                f"Relatie '{rel}' in het model heeft geen soort; gebruik {SUBSET} in de "
+                "specificatie en fit opnieuw."
+            )
+    try:
+        return MultiFrame(metaframes(gmf), rels)
+    except ValueError:
+        # De melding van metasyn noemt kolommen; niet doorgeven, alleen de relaties.
+        names = ", ".join(f"'{rel}'" for rel in rels)
+        raise SyntheseError(
+            f"De relaties in het model kloppen niet met de tabellen en kolommen: {names}."
+        ) from None
 
 
 def tool_info(gmf: dict[str, Any]) -> dict[str, Any]:
@@ -422,13 +634,10 @@ def synthesize_tables(
     schemas = expected_schemas(gmf)
     excluded = excluded_columns(gmf)
     set_global_seeds(seed)
+    frames = _synthesize_frames(gmf, rows=rows, seed=seed)
     result: dict[str, pl.DataFrame] = {}
-    for name, metaframe in metaframes(gmf).items():
-        n_rows = rows if rows is not None else metaframe.n_rows
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            synthetic = metaframe.synthesize(n_rows, progress_bar=False)
-        _log_warnings(name, caught, "het synthetiseren")
+    for name, synthetic in frames.items():
+        n_rows = synthetic.height
         restored = []
         for column in synthetic.columns:
             series, failed = restore_column(synthetic[column], schemas[name][column])
@@ -449,3 +658,36 @@ def synthesize_tables(
                 ", ".join(excluded[name]),
             )
     return result
+
+
+def _synthesize_frames(
+    gmf: dict[str, Any], *, rows: int | None, seed: int
+) -> dict[str, pl.DataFrame]:
+    """Synthetiseer elke tabel; met relaties via ``MultiFrame``."""
+    if not gmf.get("relations"):
+        frames = {}
+        for name, metaframe in metaframes(gmf).items():
+            n_rows = rows if rows is not None else metaframe.n_rows
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                frames[name] = metaframe.synthesize(n_rows, progress_bar=False)
+            _log_warnings(name, caught, "het synthetiseren")
+        return frames
+    combined = multiframe(gmf)
+    # MultiFrame trekt de verwijzende sleutels met polars: ook die seed vastzetten.
+    pl.set_random_seed(seed)
+    n_rows = None if rows is None else {name: rows for name in combined.metaframes}
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        try:
+            frames = combined.synthesize(n_rows, progress_bar=False)
+        except ValueError as exc:
+            raise SyntheseError(
+                "De tabellen met relaties zijn niet te synthetiseren "
+                f"({type(exc).__name__}); kijk de aantallen rijen na: bij een relatie EQUALS "
+                "moeten beide tabellen even veel rijen hebben."
+            ) from None
+    _log_warnings(", ".join(frames), caught, "het synthetiseren")
+    for rel in combined.relations:
+        log.info("relatie '%s': verwijzende sleutels getrokken uit de sleutel", rel)
+    return frames

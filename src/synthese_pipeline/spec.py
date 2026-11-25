@@ -10,7 +10,9 @@ Het bestand volgt het configuratieformaat van metasyn 3.1:
 - ``config_version = "1.2"`` (ook 1.0 en 1.1): één tabel, met ``[[var]]`` per kolom en
   optioneel ``name`` en ``n_rows``;
 - ``config_version = "2.0"``: meer tabellen, met ``[[table]]`` (``name``, ``n_rows``) en
-  ``[[table.var]]`` per kolom.
+  ``[[table.var]]`` per kolom, en bovenaan optioneel ``relations``: relaties tussen tabellen
+  als ``"tabel_a[kolom] SUBSET OF tabel_b[kolom]"`` of ``"... INFER FROM ..."`` (zie
+  :class:`Relation`).
 
 Per kolom (``[[var]]``) gelden de sleutels van metasyn (``name``, ``description``,
 ``distribution``, ``prop_missing``, ``var_type``, ``data_free``) plus die van synthese-pipeline:
@@ -22,9 +24,10 @@ waarden uit het bestand.
 from __future__ import annotations
 
 import logging
+import re
 import tomllib
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -75,7 +78,7 @@ BRONTYPES = (
 INTEGER_BRONTYPES = tuple(name for name in BRONTYPES if name.startswith(("Int", "UInt")))
 
 _SINGLE_KEYS = {"config_version", "name", "n_rows", "var"}
-_MULTI_KEYS = {"config_version", "table"}
+_MULTI_KEYS = {"config_version", "table", "relations"}
 _TABLE_KEYS = {"name", "n_rows", "var"}
 _VAR_KEYS = {
     "name",
@@ -143,12 +146,64 @@ class TableSpec:
     columns: dict[str, ColumnSpec]
 
 
+SUBSET = "SUBSET OF"
+INFER = "INFER FROM"
+RELATION_TYPES = (SUBSET, INFER)
+_RELATION = re.compile(
+    r"^\s*(?P<table>[^\[\]\s]+)\s*\[(?P<column>[^\[\]]+)\]\s+"
+    r"(?P<kind>SUBSET\s+OF|INFER\s+FROM)\s+"
+    r"(?P<ref_table>[^\[\]\s]+)\s*\[(?P<ref_column>[^\[\]]+)\]\s*$",
+    re.IGNORECASE,
+)
+RELATION_SYNTAX = "tabel_a[kolom] SUBSET OF tabel_b[kolom] (of INFER FROM)"
+
+
+@dataclass(frozen=True)
+class Relation:
+    """Een relatie tussen twee tabellen: ``table[column]`` verwijst naar ``ref_table[ref_column]``.
+
+    ``SUBSET OF``: elke ingevulde waarde in ``column`` staat in ``ref_column``, de sleutel van
+    ``ref_table``. ``INFER FROM``: metasyn leidt het soort relatie af uit de data bij ``fit``;
+    zonder data (data-free) geldt ``SUBSET OF``.
+    """
+
+    table: str
+    column: str
+    kind: str
+    ref_table: str
+    ref_column: str
+
+    def __str__(self) -> str:
+        return f"{self.table}[{self.column}] {self.kind} {self.ref_table}[{self.ref_column}]"
+
+
+def parse_relation(text: str) -> Relation:
+    """Lees ``tabel_a[kolom] SUBSET OF tabel_b[kolom]`` (of ``INFER FROM``).
+
+    Een fout noemt alleen de relatie zelf (tekst uit de specificatie), nooit waarden uit data.
+    """
+    match = _RELATION.match(text)
+    if match is None:
+        raise SyntheseError(f"relatie '{text}' is ongeldig. Schrijf: {RELATION_SYNTAX}.")
+    relation = Relation(
+        table=match["table"],
+        column=match["column"].strip(),
+        kind=" ".join(match["kind"].upper().split()),
+        ref_table=match["ref_table"],
+        ref_column=match["ref_column"].strip(),
+    )
+    if (relation.table, relation.column) == (relation.ref_table, relation.ref_column):
+        raise SyntheseError(f"relatie '{text}' verwijst naar zichzelf.")
+    return relation
+
+
 @dataclass(frozen=True)
 class Spec:
     """Een gelezen en gecontroleerde specificatie."""
 
     version: str
     tables: list[TableSpec]
+    relations: tuple[Relation, ...] = ()
 
     @property
     def multi(self) -> bool:
@@ -190,6 +245,14 @@ class Spec:
                         "bestaat niet in de bron."
                     )
         return matched
+
+    def source_relations(self, matched: dict[str, TableSpec]) -> list[Relation]:
+        """De relaties met de tabelnamen van de bron (uit :meth:`match_tables`)."""
+        names = {(table.name or DEFAULT_TABLE): source for source, table in matched.items()}
+        return [
+            replace(rel, table=names[rel.table], ref_table=names[rel.ref_table])
+            for rel in self.relations
+        ]
 
 
 # ---------------------------------------------------------------------------- ontwerp maken
@@ -478,6 +541,13 @@ def parse_spec(data: dict[str, Any], path: str | Path = "specificatie") -> Spec:
     """Controleer een gelezen specificatie (een dict uit TOML) en geef een :class:`Spec`."""
     source = Path(path)
     version = _version(source, data)
+    if version in SINGLE_VERSIONS and "relations" in data:
+        raise _fail(
+            source,
+            "",
+            f"{_relations_text(data['relations'])}: relaties tussen tabellen kunnen alleen bij "
+            f'config_version = "{MULTI_VERSION}" met [[table]] per tabel.',
+        )
     if version in SINGLE_VERSIONS:
         _check_keys(source, "", data, _SINGLE_KEYS)
         name = data.get("name")
@@ -498,16 +568,107 @@ def parse_spec(data: dict[str, Any], path: str | Path = "specificatie") -> Spec:
                 raise _fail(source, f"tabel {number}", "heeft geen name.")
             if "relations" in item:
                 raise _fail(
-                    source, _where(name), "relaties tussen tabellen worden nog niet ondersteund."
+                    source,
+                    _where(name),
+                    "relaties staan bovenaan het bestand, niet per tabel: relations = "
+                    f'["{RELATION_SYNTAX}"].',
                 )
             _check_keys(source, _where(name), item, _TABLE_KEYS)
             tables.append(_read_table(source, item, name, number))
-    spec = Spec(version=version, tables=tables)
+    relations: tuple[Relation, ...] = ()
+    if "relations" in data:
+        tables, relations = _read_relations(source, data["relations"], tables)
+    spec = Spec(version=version, tables=tables, relations=relations)
     try:
         check_table_names(spec.table_names())
     except SyntheseError as exc:
         raise _fail(source, "", str(exc)) from None
     return spec
+
+
+def _relations_text(value: Any) -> str:
+    if isinstance(value, list) and value and all(isinstance(item, str) for item in value):
+        return ", ".join(f"relatie '{item}'" for item in value)
+    return "relations"
+
+
+def _read_relations(
+    path: Path, value: Any, tables: list[TableSpec]
+) -> tuple[list[TableSpec], tuple[Relation, ...]]:
+    """Lees ``relations`` en controleer tabellen en kolommen tegen de specificatie.
+
+    Een kolom waarnaar een relatie verwijst, is een sleutel: zonder soort krijgt hij soort
+    ``key``. Geeft de tabellen (met die soort) en de relaties terug.
+    """
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise _fail(path, "", f'relations moet een lijst met teksten zijn: ["{RELATION_SYNTAX}"].')
+    by_name = {table.name or DEFAULT_TABLE: table for table in tables}
+    relations: list[Relation] = []
+    for text in value:
+        try:
+            relation = parse_relation(text)
+        except SyntheseError as exc:
+            raise _fail(path, "", str(exc)) from None
+        for table, column in (
+            (relation.table, relation.column),
+            (relation.ref_table, relation.ref_column),
+        ):
+            if table not in by_name:
+                raise _fail(
+                    path, "", f"relatie '{text}' noemt tabel '{table}', maar die staat er niet in."
+                )
+            if column not in by_name[table].columns:
+                raise _fail(
+                    path,
+                    "",
+                    f"relatie '{text}' noemt kolom '{column}' in tabel '{table}', maar die staat "
+                    "er niet in. Geef de kolom een [[table.var]].",
+                )
+            if by_name[table].columns[column].excluded:
+                raise _fail(
+                    path,
+                    "",
+                    f"relatie '{text}': kolom '{column}' in tabel '{table}' is uitgesloten en "
+                    "gaat niet in het model.",
+                )
+        relations.append(relation)
+    referencing = {(rel.table, rel.column) for rel in relations}
+    seen: set[tuple[str, str]] = set()
+    for relation in relations:
+        key = (relation.table, relation.column)
+        if key in seen:
+            raise _fail(
+                path,
+                "",
+                f"relatie '{relation}': kolom '{relation.column}' in tabel '{relation.table}' "
+                "verwijst al naar een andere kolom.",
+            )
+        seen.add(key)
+        if (relation.ref_table, relation.ref_column) in referencing:
+            raise _fail(
+                path,
+                "",
+                f"relatie '{relation}': kolom '{relation.ref_column}' in tabel "
+                f"'{relation.ref_table}' verwijst zelf ook naar een andere kolom; een kolom kan "
+                "niet tegelijk verwijzen en sleutel zijn.",
+            )
+        table = by_name[relation.ref_table]
+        column = table.columns[relation.ref_column]
+        if column.kind not in (None, "key") or column.unique is False:
+            raise _fail(
+                path,
+                "",
+                f"relatie '{relation}': kolom '{relation.ref_column}' in tabel "
+                f"'{relation.ref_table}' is de sleutel waarnaar verwezen wordt en moet uniek "
+                "zijn (soort key), niet "
+                + ("unique = false." if column.unique is False else f"soort {column.kind}."),
+            )
+        if column.kind is None:
+            columns = dict(table.columns)
+            columns[column.name] = replace(column, kind="key")
+            by_name[relation.ref_table] = replace(table, columns=columns)
+    new_tables = [by_name[table.name or DEFAULT_TABLE] for table in tables]
+    return new_tables, tuple(relations)
 
 
 def load_spec(path: str | Path) -> Spec:

@@ -116,4 +116,13 @@ def describe_model(gmf: dict[str, Any]) -> str:
             if var.get("description"):
                 lines.append(f"  omschrijving: {var['description']}")
         lines.extend(f"- {column}: uitgesloten (vrije tekst)" for column in skipped)
+    relations = gmf.get("relations") or []
+    if relations:
+        lines.append("")
+        lines.append("Relaties (de verwijzende kolom krijgt bij het maken waarden uit de sleutel):")
+        lines.extend(
+            f"- {rel['foreign_table']}[{rel['foreign_key']}] {rel['relation_type']} "
+            f"{rel['primary_table']}[{rel['primary_key']}]"
+            for rel in relations
+        )
     return "\n".join(lines)
