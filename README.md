@@ -308,6 +308,8 @@ Een devcontainer staat in `.devcontainer/`.
 
 Het pakket `synthese-pipeline` gaat naar [PyPI](https://pypi.org/p/synthese-pipeline) via Trusted Publishing: GitHub Actions logt in met een kortlevend OIDC-token, er staan geen API-tokens in de repo. Een versie op PyPI is definitief: dezelfde versie kan niet opnieuw worden geüpload.
 
+De eerste keer stelt een beheerder het publiceren in: zie [Publiceren instellen](#publiceren-instellen-eenmalig).
+
 1. **Versie ophogen.** Op een branch, via een pull request naar `main`:
 
    ```bash
@@ -351,6 +353,8 @@ Het pakket `synthese-pipeline` gaat naar [PyPI](https://pypi.org/p/synthese-pipe
 
 Elke push naar `main` (en een handmatige start via *Actions → Preview on TestPyPI → Run workflow*) draait [`preview.yml`](.github/workflows/preview.yml). Die bouwt een previewversie `X.Y.Z.devN`, waarbij `N` het volgnummer van de workflowrun is. De versie wordt alleen in de runner aangepast, niet gecommit. De build gaat naar [TestPyPI](https://test.pypi.org/p/synthese-pipeline) vanuit de GitHub-omgeving `testpypi`; bestanden die er al staan worden overgeslagen.
 
+De stap *publish* draait alleen als de repository-variabele `PUBLISH_ENABLED` op `true` staat. Zolang die niet is gezet, bouwt de workflow wel, maar slaat hij het publiceren over; de run blijft groen. Zie [Publiceren instellen](#publiceren-instellen-eenmalig).
+
 Een preview proberen: haal alleen het pakket zelf van TestPyPI en de afhankelijkheden van PyPI (op TestPyPI kan iedereen pakketten met dezelfde naam zetten):
 
 ```bash
@@ -360,6 +364,21 @@ uvx --from /tmp/preview/synthese_pipeline-0.1.0.dev12-py3-none-any.whl synthese-
 ```
 
 Het volgnummer staat in de log van de stap *Set preview version* en in de lijst met versies op TestPyPI.
+
+### Publiceren instellen (eenmalig)
+
+Een beheerder van de repo en van het project op (Test)PyPI doet dit één keer:
+
+1. **TestPyPI.** Voeg op [test.pypi.org](https://test.pypi.org/manage/account/publishing/) een Trusted Publisher toe (bij een nieuw project: een *pending publisher*): eigenaar `cedanl`, repository `synthese-pipeline`, workflow `preview.yml`, omgeving `testpypi`.
+2. **PyPI.** Doe hetzelfde op [pypi.org](https://pypi.org/manage/account/publishing/): workflow `pypi-publish.yml`, omgeving `pypi`.
+3. **Omgevingen.** Maak in GitHub onder *Settings → Environments* de omgevingen `testpypi` en `pypi` aan. Zet voor `pypi` eventueel een verplichte reviewer aan.
+4. **Aanzetten.** Zet de repository-variabele `PUBLISH_ENABLED` op `true`: *Settings → Secrets and variables → Actions → Variables*, of:
+
+   ```bash
+   gh variable set PUBLISH_ENABLED --body true --repo cedanl/synthese-pipeline
+   ```
+
+De variabele geldt alleen voor de preview op TestPyPI. Een release op een tag (`pypi-publish.yml`) hangt er niet van af.
 
 ## Achtergrond en verwijzingen
 
