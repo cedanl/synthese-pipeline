@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from synthese_pipeline.model import column_kinds, tool_info
+from synthese_pipeline.model import column_kinds, excluded_columns, tool_info
 
 MAX_LABELS = 10
 
@@ -19,6 +19,7 @@ _KIND_LABELS = {
     "date": "datum/tijd",
     "key": "unieke sleutel",
     "text": "tekst",
+    "faker": "verzonnen met Faker",
 }
 
 
@@ -87,6 +88,7 @@ def describe_model(gmf: dict[str, Any]) -> str:
     """Tekst voor ``synthese-pipeline toon``."""
     info = tool_info(gmf)
     kinds = column_kinds(gmf)
+    excluded = excluded_columns(gmf)
     disclosure = info.get("disclosure_control", {})
     if disclosure.get("gebruikt") is True:
         disclosure_text = f"aan ({disclosure.get('plugin')} {disclosure.get('versie')})"
@@ -98,8 +100,10 @@ def describe_model(gmf: dict[str, Any]) -> str:
     lines = [f"Model met {len(gmf['tables'])} tabel(len). Disclosure control: {disclosure_text}."]
     for table in gmf["tables"]:
         name = table["name"]
+        skipped = excluded.get(name, [])
         lines.append("")
-        lines.append(f"Tabel '{name}': {table['n_rows']} rijen, {table['n_columns']} kolommen")
+        header = f"Tabel '{name}': {table['n_rows']} rijen, {table['n_columns']} kolommen"
+        lines.append(header + (f", {len(skipped)} uitgesloten" if skipped else ""))
         for var in table["vars"]:
             kind = kinds.get(name, {}).get(var["name"])
             kind_text = _KIND_LABELS.get(kind or "", var.get("dtype", "?"))
@@ -107,4 +111,5 @@ def describe_model(gmf: dict[str, Any]) -> str:
                 f"- {var['name']} ({kind_text}): {describe_distribution(var['distribution'])}; "
                 f"lege waarden: {_percent(var.get('prop_missing', 0.0))}"
             )
+        lines.extend(f"- {column}: uitgesloten (vrije tekst)" for column in skipped)
     return "\n".join(lines)

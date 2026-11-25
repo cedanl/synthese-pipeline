@@ -43,6 +43,51 @@ def students(n: int = 200, seed: int = 1, *, sentinel: bool = True) -> pl.DataFr
     )
 
 
+FREETEXT_MARK = "Qzxw"
+_NAME_PARTS = ("Qzxwa", "Qzxwo", "Qzxwi", "Qzxwu", "Qzxwe", "Qzxwy")
+_NAME_ENDS = ("brq", "vlq", "tkq", "mpq", "dzq", "fxq", "ghq", "jkq")
+
+
+def freetext(n: int = 200, seed: int = 3) -> pl.DataFrame:
+    """Tabel met vrije tekst (zinnen, namen), postcodes, opleidingscodes en een cijfer.
+
+    Elke tekstwaarde in ``opmerking`` en ``naam`` bevat ``FREETEXT_MARK``: zo'n woord komt niet
+    voor in de Nederlandse woorden en namen van Faker, dus een gelijke waarde is een kopie.
+    """
+    rng = np.random.default_rng(seed)
+
+    def name() -> str:
+        first = str(rng.choice(_NAME_PARTS)) + str(rng.choice(_NAME_ENDS))
+        last = str(rng.choice(_NAME_PARTS)) + str(rng.choice(_NAME_ENDS)) + "son"
+        return f"{first} {last}"
+
+    letters = list("ABCDEFGHJKLMNPRSTVWXZ")
+    return pl.DataFrame(
+        {
+            "opmerking": pl.Series(
+                [
+                    f"{FREETEXT_MARK} schreef op dag {i} dat het rooster {rng.integers(1, 99)} "
+                    "keer veranderde"
+                    for i in range(n)
+                ],
+                dtype=pl.String,
+            ),
+            "naam": pl.Series([name() for _ in range(n)], dtype=pl.String),
+            "postcode": pl.Series(
+                [
+                    f"{rng.integers(1000, 10000)} {rng.choice(letters)}{rng.choice(letters)}"
+                    for _ in range(n)
+                ],
+                dtype=pl.String,
+            ),
+            "opleidingscode": pl.Series(
+                [f"{x}" for x in rng.integers(30000, 30300, n)], dtype=pl.String
+            ),
+            "cijfer": pl.Series(np.round(rng.normal(6.8, 0.9, n), 1), dtype=pl.Float64),
+        }
+    )
+
+
 def results(n: int = 120, seed: int = 2) -> pl.DataFrame:
     """Tweede tabel voor tests met meerdere tabellen."""
     rng = np.random.default_rng(seed)

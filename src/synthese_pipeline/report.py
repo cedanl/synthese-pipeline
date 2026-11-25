@@ -1,7 +1,8 @@
 """Rapport en exitcode van een ``synthesize``-run.
 
 Het rapport bevat alleen aantallen, scores, kolomnamen, tabelnamen en datatypes: nooit waarden
-uit de echte of de synthetische data.
+uit de echte of de synthetische data. Kolommen die het model uitsluit (vrije tekst) staan per
+tabel onder ``uitgesloten`` en tellen niet mee in de structuurcontrole.
 """
 
 from __future__ import annotations
@@ -145,6 +146,11 @@ def column_measure(real: pl.Series, synthetic: pl.Series, kind: str | None) -> d
     if kind == "text":
         result.update(maat=None, waarde=None, toelichting="tekst: geen verdeling vergeleken")
         return result
+    if kind == "faker":
+        result.update(
+            maat=None, waarde=None, toelichting="verzonnen met Faker: geen verdeling vergeleken"
+        )
+        return result
     if (
         kind in _DISTANCE_KINDS
         and (real.dtype.is_numeric() or real.dtype.is_temporal())
@@ -173,13 +179,18 @@ def table_report(
     *,
     real: pl.DataFrame | None,
     kinds: dict[str, str],
+    excluded: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Rapport voor één tabel."""
+    """Rapport voor één tabel. ``excluded``: kolommen die het model bewust weglaat."""
+    excluded = excluded or []
+    if real is not None:
+        real = real.drop([column for column in excluded if column in real.columns])
     reference = expected if real is None else dict(real.schema)
     deviations = check_structure(reference, synthetic, real=real, kinds=kinds)
     entry: dict[str, Any] = {
         "rijen": synthetic.height,
         "kolommen": synthetic.width,
+        "uitgesloten": list(excluded),
         "structuur": {"gelijk": not deviations, "afwijkingen": deviations},
     }
     if real is None:
@@ -203,8 +214,10 @@ def build_report(
     synthetic: dict[str, pl.DataFrame],
     real: dict[str, pl.DataFrame] | None,
     seed: int,
+    excluded: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
     """Maak het rapport van een run en bepaal de exitcode."""
+    excluded = excluded or {}
     reference: dict[str, Any] = expected if real is None else real
     pairs, missing, extra = pair_tables(reference, synthetic)
     tables: dict[str, Any] = {}
@@ -216,6 +229,7 @@ def build_report(
             synthetic[syn_name],
             real=None if real is None else real[ref_name],
             kinds=kinds.get(syn_name, {}),
+            excluded=excluded.get(syn_name, []),
         )
 
     structure_equal = not general and all(t["structuur"]["gelijk"] for t in tables.values())
