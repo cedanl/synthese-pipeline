@@ -2,7 +2,9 @@
 
 Het rapport bevat alleen aantallen, scores, kolomnamen, tabelnamen en datatypes: nooit waarden
 uit de echte of de synthetische data. Kolommen die het model uitsluit (vrije tekst) staan per
-tabel onder ``uitgesloten`` en tellen niet mee in de structuurcontrole.
+tabel onder ``uitgesloten`` en tellen niet mee in de structuurcontrole. Bij relaties tussen
+tabellen telt ``relaties`` per relatie de wezen (verwijzende waarden zonder sleutel) en dubbele
+sleutels; ``beperkingen`` zegt wat de synthetische data dan niet nabootst.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ EXIT_ERROR = 1
 EXIT_USAGE = 2
 EXIT_STRUCTURE = 3
 EXIT_COPIES = 4
+EXIT_RELATIONS = 5
 
 EXIT_CODES = {
     EXIT_OK: "geslaagd",
@@ -31,7 +34,15 @@ EXIT_CODES = {
     EXIT_USAGE: "verkeerd gebruik van de commandoregel",
     EXIT_STRUCTURE: "structuur wijkt af van de bron of het model",
     EXIT_COPIES: "letterlijke kopieën van echte rijen gevonden",
+    EXIT_RELATIONS: "relaties tussen tabellen kloppen niet (wezen of dubbele sleutels)",
 }
+
+RELATION_LIMITATION = (
+    "Relaties: het aantal rijen per sleutel (bijv. inschrijvingen per student) volgt niet de "
+    "echte verdeling. metasyn trekt de verwijzende sleutels gelijkmatig met teruglegging; "
+    "gemeten op dummydata: hoogstens 9 rijen per sleutel tegen 5 in de bron. Lege "
+    "verwijzingen in de bron komen niet terug."
+)
 
 _DISTANCE_KINDS = {"discrete", "continuous", "date"}
 
@@ -206,6 +217,57 @@ def table_report(
     return entry
 
 
+def _relation_text(rel: dict[str, Any]) -> str:
+    return (
+        f"{rel['foreign_table']}[{rel['foreign_key']}] {rel['relation_type']} "
+        f"{rel['primary_table']}[{rel['primary_key']}]"
+    )
+
+
+def relation_report(rel: dict[str, Any], synthetic: dict[str, pl.DataFrame]) -> dict[str, Any]:
+    """Controleer één relatie in de synthetische data: alleen aantallen, nooit waarden.
+
+    ``wezen``: ingevulde verwijzende waarden die niet in de sleutel staan. ``dubbele_sleutels``:
+    ingevulde sleutelwaarden die vaker dan één keer voorkomen (aantal rijen boven het eerste).
+    """
+    entry: dict[str, Any] = {
+        "relatie": _relation_text(rel),
+        "tabel": rel["foreign_table"],
+        "kolom": rel["foreign_key"],
+        "verwijst_naar_tabel": rel["primary_table"],
+        "verwijst_naar_kolom": rel["primary_key"],
+        "rijen_gecontroleerd": None,
+        "lege_verwijzingen": None,
+        "wezen": None,
+        "dubbele_sleutels": None,
+    }
+    foreign_df = synthetic.get(rel["foreign_table"])
+    primary_df = synthetic.get(rel["primary_table"])
+    if (
+        foreign_df is None
+        or primary_df is None
+        or rel["foreign_key"] not in foreign_df.columns
+        or rel["primary_key"] not in primary_df.columns
+    ):
+        entry["toelichting"] = "niet gecontroleerd: tabel of kolom ontbreekt"
+        return entry
+    foreign = foreign_df[rel["foreign_key"]].cast(pl.String).rename("sleutel")
+    primary = primary_df[rel["primary_key"]].cast(pl.String).rename("sleutel").drop_nulls()
+    orphans = (
+        foreign.drop_nulls()
+        .to_frame()
+        .join(primary.unique().to_frame(), on="sleutel", how="anti")
+        .height
+    )
+    entry.update(
+        rijen_gecontroleerd=foreign.len(),
+        lege_verwijzingen=foreign.null_count(),
+        wezen=orphans,
+        dubbele_sleutels=primary.len() - primary.n_unique(),
+    )
+    return entry
+
+
 def build_report(
     *,
     gmf_tool_info: dict[str, Any],
@@ -215,9 +277,18 @@ def build_report(
     real: dict[str, pl.DataFrame] | None,
     seed: int,
     excluded: dict[str, list[str]] | None = None,
+    relations: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Maak het rapport van een run en bepaal de exitcode."""
+    """Maak het rapport van een run en bepaal de exitcode.
+
+    ``relations`` zijn de relaties uit het GMF (``relations``); de verwijzende kolommen krijgen
+    geen verdelingsmaat, want hun waarden komen uit de sleutel.
+    """
     excluded = excluded or {}
+    relations = relations or []
+    kinds = {table: dict(columns) for table, columns in kinds.items()}
+    for rel in relations:
+        kinds.setdefault(rel["foreign_table"], {})[rel["foreign_key"]] = "key"
     reference: dict[str, Any] = expected if real is None else real
     pairs, missing, extra = pair_tables(reference, synthetic)
     tables: dict[str, Any] = {}
@@ -236,15 +307,21 @@ def build_report(
     copies = (
         None if real is None else sum(int(t["letterlijke_kopieen"] or 0) for t in tables.values())
     )
+    relation_entries = [relation_report(rel, synthetic) for rel in relations]
+    relations_ok = all(
+        not entry["wezen"] and not entry["dubbele_sleutels"] for entry in relation_entries
+    )
     if copies:
         code = EXIT_COPIES
     elif not structure_equal:
         code = EXIT_STRUCTURE
+    elif not relations_ok:
+        code = EXIT_RELATIONS
     else:
         code = EXIT_OK
 
     disclosure = gmf_tool_info.get("disclosure_control") or {"gebruikt": None}
-    return {
+    report: dict[str, Any] = {
         "synthese_pipeline": __version__,
         "metasyn": version("metasyn"),
         "seed": seed,
@@ -259,9 +336,13 @@ def build_report(
             else "synthetische rijen die gelijk zijn aan een rij die in de bron uniek is"
         ),
         "tabellen": tables,
+        "relaties": relation_entries,
         "exitcode": code,
         "uitkomst": EXIT_CODES[code],
     }
+    if relations:
+        report["beperkingen"] = [RELATION_LIMITATION]
+    return report
 
 
 def default_report_path(target: str | Path, single_file: bool) -> Path:

@@ -133,3 +133,40 @@ def survey(n: int = 200, seed: int = 4) -> pl.DataFrame:
             "geslacht": pl.Series(gender, dtype=pl.String),
         }
     )
+
+
+def linked_tables(seed: int = 5) -> dict[str, pl.DataFrame]:
+    """Drie gekoppelde tabellen: student, inschrijving (per student), resultaat (per inschrijving).
+
+    ``student_id`` is tekst met ``SENTINEL`` in elke waarde, zodat een sleutelwaarde in een
+    rapport, log of model te herkennen is. Elke verwijzing staat in de tabel erboven.
+    """
+    rng = np.random.default_rng(seed)
+    n_students, n_enrolments, n_results = 60, 120, 300
+    student_ids = [f"{SENTINEL}{i:04d}" for i in range(n_students)]
+    student = pl.DataFrame(
+        {
+            "student_id": pl.Series(student_ids, dtype=pl.String),
+            "geslacht": pl.Series([str(x) for x in rng.choice(["M", "V"], n_students)]),
+            "leeftijd": pl.Series(rng.integers(18, 31, n_students), dtype=pl.Int64),
+        }
+    )
+    enrolment_ids = list(range(700_000, 700_000 + n_enrolments))
+    inschrijving = pl.DataFrame(
+        {
+            "inschrijving_id": pl.Series(enrolment_ids, dtype=pl.Int64),
+            "student_id": pl.Series(
+                [str(x) for x in rng.choice(student_ids, n_enrolments)], dtype=pl.String
+            ),
+            "opleiding": pl.Series([str(x) for x in rng.choice(["B-ICT", "B-HBO"], n_enrolments)]),
+        }
+    )
+    resultaat = pl.DataFrame(
+        {
+            "inschrijving_id": pl.Series(
+                rng.choice(enrolment_ids, n_results).tolist(), dtype=pl.Int64
+            ),
+            "cijfer": pl.Series(np.round(rng.uniform(1, 10, n_results), 1), dtype=pl.Float64),
+        }
+    )
+    return {"student": student, "inschrijving": inschrijving, "resultaat": resultaat}

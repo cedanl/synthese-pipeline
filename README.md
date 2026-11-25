@@ -106,7 +106,7 @@ uv run synthese-pipeline fit data.csv model.json --spec spec.toml
 
 Het ontwerp bevat per kolom de afgeleide soort, het brontype en een lege `description`. Een kandidaat-sleutel krijgt `distribution = {unique = true}`, vrije tekst `uitgesloten = true`. Er staan geen waarden uit de data in, alleen namen, soorten, types en het aantal rijen. Met `--with-categories` komen de categorieën van categorische kolommen erbij. Dat zijn wel waarden uit de data: het log meldt per kolom hoeveel categorieën minder dan 10 keer voorkomen, en je kijkt het bestand na voordat het de beveiligde omgeving verlaat.
 
-Eén tabel geeft `config_version = "1.2"` met `[[var]]` per kolom (1.0 en 1.1 worden ook gelezen). Meer tabellen geven `config_version = "2.0"` met `[[table]]` per tabel en `[[table.var]]` per kolom. Relaties tussen tabellen worden nog niet ondersteund.
+Eén tabel geeft `config_version = "1.2"` met `[[var]]` per kolom (1.0 en 1.1 worden ook gelezen). Meer tabellen geven `config_version = "2.0"` met `[[table]]` per tabel en `[[table.var]]` per kolom. Relaties tussen tabellen staan dan bovenaan (zie [Relaties tussen tabellen](#relaties-tussen-tabellen)).
 
 | Sleutel per kolom | Betekenis | Bij `fit --spec` | Bij data-free |
 |---|---|---|---|
@@ -126,15 +126,47 @@ Bovenaan mogen `n_rows` (aantal rijen in het model) en bij 1.x `name` (tabelnaam
 
 Zet in `description` nooit echte waarden (namen, nummers, voorbeelden uit de data): de omschrijving gaat mee in het model en in de specificatie.
 
+### Relaties tussen tabellen
+
+Een kolom die naar de sleutel van een andere tabel verwijst (bijv. `student_id` in `inschrijving`), geef je op als relatie. Relaties staan bovenaan een specificatie met `config_version = "2.0"`, als lijst met teksten, vóór de eerste `[[table]]`:
+
+```toml
+config_version = "2.0"
+relations = [
+  "inschrijving[student_id] SUBSET OF student[student_id]",
+  "resultaat[inschrijving_id] INFER FROM inschrijving[inschrijving_id]",
+]
+
+[[table]]
+name = "student"
+[[table.var]]
+name = "student_id"
+# ... en de andere tabellen met hun kolommen
+```
+
+| Vorm | Betekenis |
+|---|---|
+| `tabel_a[kolom] SUBSET OF tabel_b[kolom]` | elke ingevulde waarde in `tabel_a[kolom]` staat in `tabel_b[kolom]` |
+| `tabel_a[kolom] INFER FROM tabel_b[kolom]` | metasyn leidt het soort relatie bij `fit` af uit de data (`SUBSET OF`, of `EQUALS` / `EQUAL ORDERED` bij een één-op-één-relatie); zonder data geldt `SUBSET OF` |
+
+- Beide tabellen en kolommen moeten in de specificatie staan. De kolom waarnaar verwezen wordt (`tabel_b[kolom]`) is de sleutel: hij krijgt soort `key` en blijft uniek. Een andere soort geeft een fout.
+- Een kolom kan maar naar één sleutel verwijzen, en kan niet tegelijk verwijzen en sleutel zijn. Drie niveaus (student, inschrijving, resultaat) gaan wel, met verschillende kolommen.
+- Bij `fit` komen de relaties in `relations` van het model. Synthetiseren gaat dan met [`MultiFrame` van metasyn](https://metasyn.readthedocs.io/en/latest/multiframe.html): de verwijzende kolom krijgt waarden uit de synthetische sleutel, dus er zijn geen wezen (verwijzingen zonder sleutel). Dezelfde seed geeft dezelfde data.
+- De verwijzende kolom krijgt in het model de verdeling van de sleutel. Er staat dus niets uit de verwijzende kolom zelf in het model. Met `INFER FROM` en verwijzende waarden zonder sleutel in de bron geeft `fit` een fout met alleen het aantal; gebruik dan `SUBSET OF`.
+- Zonder data (data-free) heeft de verwijzende kolom geen eigen verdeling nodig.
+- Een relatie in een specificatie met één tabel (1.x), een ongeldige tekst, of een onbekende tabel of kolom geeft een fout (exitcode 1) die de relatie noemt, zonder waarden uit de data.
+
+**Beperking.** Het aantal rijen per sleutel (bijv. inschrijvingen per student) volgt niet de echte verdeling. metasyn trekt de verwijzende sleutels gelijkmatig met teruglegging. Op dummydata gemeten: max 9 inschrijvingen per student tegen echt 5. Lege verwijzingen in de bron komen niet terug. Het rapport noemt dit onder `beperkingen` zodra er relaties zijn.
+
 ### Stap 0: dummydata zonder data
 
 Een instelling kan beginnen zonder dat er echte data of een model de beveiligde omgeving verlaat. Ze schrijft een specificatie met per kolom een verdeling, en maakt daar dummydata mee ([data-free in metasyn](https://metasyn.readthedocs.io/en/latest/datafree.html)):
 
 ```bash
-uv run synthese-pipeline synthesize --spec examples/spec.toml --rows 100 uit.csv --seed 1
+uv run synthese-pipeline synthesize --spec examples/spec.toml --rows 100 --format csv uit --seed 1
 ```
 
-[`examples/spec.toml`](examples/spec.toml) heeft een sleutel, een Likert-item, een code, een datum, een kommagetal en een uitgesloten kolom met vrije tekst. Zonder `--rows` geldt `n_rows` uit de specificatie. Het rapport werkt zoals altijd: de structuur wordt vergeleken met de specificatie, met dezelfde exitcodes, en `data_free` staat op `true`. Dezelfde specificatie met dezelfde seed geeft dezelfde data. Geef `MODEL` en `--spec` niet samen op: dat is een gebruiksfout (exitcode 2).
+[`examples/spec.toml`](examples/spec.toml) heeft twee tabellen. `studenten` heeft een sleutel, een Likert-item, een code, een datum, een kommagetal en een uitgesloten kolom met vrije tekst. `resultaten` verwijst met `studentnummer` naar `studenten` (een relatie), met een vak en een cijfer. Met twee tabellen is het doel een map (`uit/studenten.csv`, `uit/resultaten.csv`, `uit/rapport.json`). Zonder `--rows` geldt `n_rows` uit de specificatie. Het rapport werkt zoals altijd: de structuur wordt vergeleken met de specificatie, met dezelfde exitcodes, en `data_free` staat op `true`. Dezelfde specificatie met dezelfde seed geeft dezelfde data. Geef `MODEL` en `--spec` niet samen op: dat is een gebruiksfout (exitcode 2).
 
 Zonder data is per kolom een verdeling nodig. Een `key` zonder verdeling wordt een oplopend nummer vanaf 1, een kolom met `categorieen` een keuze met gelijke kansen, en een kolom met `faker` krijgt verzonnen waarden. Een ontwerp van `init-spec` heeft die verdelingen nog niet: vul ze aan. Dummydata uit een specificatie is **niet statistisch geldig**. Ze heeft de juiste kolommen en types, maar de verdelingen zijn wat je opschrijft, niet wat er in de echte data zit. Gebruik ze om code te bouwen en te testen, niet voor uitkomsten.
 
@@ -152,6 +184,7 @@ Zonder data is per kolom een verdeling nodig. Een `key` zonder verdeling wordt e
 
 - de versie van synthese-pipeline en metasyn, de seed, en of disclosure control aan stond;
 - per tabel: of de structuur gelijk is (kolommen, volgorde, datatypes) met de afwijkingen, en welke kolommen zijn uitgesloten (vrije tekst);
+- per relatie (`relaties`): de relatie als tekst (tabel- en kolomnamen), het aantal gecontroleerde rijen, lege verwijzingen, **wezen** (verwijzende waarden die niet in de sleutel staan) en dubbele sleutels. Zonder relaties is de lijst leeg. Met relaties staat de beperking hierboven onder `beperkingen`;
 - met `--source BRON`: per kolom een verdelingsmaat (TV-afstand voor categorieën, Wasserstein-afstand voor getallen, in dagen voor datums), het aandeel lege waarden echt en synthetisch, nieuwe categorieën, en het aantal **letterlijke kopieën**: synthetische rijen die gelijk zijn aan een rij die in de echte data maar één keer voorkomt.
 
 Zonder `--source` vergelijkt het rapport de structuur met het model en staan de kopieën op "niet gecontroleerd"; de exitcode verandert daar niet door. Zonder `--seed` kiest de tool een seed en zet die in het rapport. Hetzelfde model met dezelfde seed geeft dezelfde data.
@@ -164,7 +197,8 @@ Zonder `--source` vergelijkt het rapport de structuur met het model en staan de 
 | 1 | fout (invoer, model of omgeving) |
 | 2 | verkeerd gebruik van de commandoregel |
 | 3 | structuur wijkt af van de bron of het model |
-| 4 | letterlijke kopieën van echte rijen gevonden (gaat voor 3) |
+| 4 | letterlijke kopieën van echte rijen gevonden (gaat voor 3 en 5) |
+| 5 | relaties tussen tabellen kloppen niet: wezen of dubbele sleutels (3 gaat voor) |
 
 ## Ontwikkeling
 
