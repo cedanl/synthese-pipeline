@@ -2,7 +2,9 @@
 
 Een GMF-bestand van synthese-pipeline is een gewoon metasyn-GMF (versie 2.1, met één of meer
 tabellen) plus een blok ``synthese_pipeline`` met per kolom de soort en het brontype, en of
-disclosure control aan stond. Alleen dit bestand hoeft de beveiligde omgeving te verlaten.
+disclosure control aan stond. Kolommen met vrije tekst (soort ``freetext``) staan niet in het
+model: het blok noemt ze per tabel onder ``uitgesloten``, met alleen de naam en het brontype.
+Alleen dit bestand hoeft de beveiligde omgeving te verlaten.
 """
 
 from __future__ import annotations
@@ -24,9 +26,11 @@ from metasyn.util import set_global_seeds
 
 from synthese_pipeline import __version__
 from synthese_pipeline.column_types import (
+    check_faker_conflicts,
     check_overrides,
     dtype_from_dict,
     dtype_to_dict,
+    faker_types_for_table,
     kinds_for_table,
     prepare_column,
     restore_column,
@@ -37,6 +41,7 @@ from synthese_pipeline.storage import check_table_names
 
 TOOL_KEY = "synthese_pipeline"
 GMF_VERSION = "2.1"
+EXCLUDED_KIND = "freetext"
 
 log = logging.getLogger("synthese_pipeline")
 
@@ -66,22 +71,48 @@ def fit_tables(
     tables: dict[str, pl.DataFrame],
     *,
     overrides: dict[str, str] | None = None,
+    fakers: dict[str, str] | None = None,
     disclosure: bool = True,
 ) -> dict[str, Any]:
-    """Fit per tabel een metasyn-model en geef het GMF als dict terug."""
+    """Fit per tabel een metasyn-model en geef het GMF als dict terug.
+
+    ``overrides`` zijn de soorten uit ``--type``, ``fakers`` de Faker-providers uit ``--faker``.
+    Kolommen van soort ``freetext`` gaan niet in het model.
+    """
     overrides = overrides or {}
+    fakers = fakers or {}
     check_table_names(tables)
     check_overrides(overrides, tables)
+    check_overrides(fakers, tables, option="--faker")
+    check_faker_conflicts(overrides, fakers)
     privacy = disclosure_privacy() if disclosure else None
     disclosure_block = disclosure_info(privacy)
 
     gmf_tables: list[dict[str, Any]] = []
     table_info: dict[str, Any] = {}
     for name, df in tables.items():
-        kinds = kinds_for_table(name, df, overrides)
-        columns, var_specs, column_info = [], [], {}
+        kinds = kinds_for_table(name, df, overrides, fakers)
+        faker_types = faker_types_for_table(name, df, fakers)
+        excluded = [column for column in df.columns if kinds[column] == EXCLUDED_KIND]
+        if len(excluded) == df.width:
+            raise SyntheseError(
+                f"Tabel '{name}' heeft alleen kolommen met vrije tekst; die gaan niet in het "
+                "model. Geef met --type kolom=text of --faker kolom=provider aan wat erin moet."
+            )
+        columns, var_specs, column_info, excluded_info = [], [], {}, {}
         for column in df.columns:
-            prepared, spec = prepare_column(df[column], kinds[column])
+            if column in excluded:
+                excluded_info[column] = {"brontype": dtype_to_dict(df.schema[column])}
+                log.info(
+                    "tabel '%s', kolom '%s': soort %s, uitgesloten (vrije tekst)",
+                    name,
+                    column,
+                    EXCLUDED_KIND,
+                )
+                continue
+            prepared, spec = prepare_column(
+                df[column], kinds[column], faker_type=faker_types.get(column)
+            )
             columns.append(prepared)
             if spec is not None:
                 var_specs.append({"name": column, **spec})
@@ -99,7 +130,15 @@ def fit_tables(
         _log_warnings(name, caught, "het fitten")
         gmf_tables.extend(_jsonable(metaframe.to_dict())["tables"])
         table_info[name] = {"kolommen": column_info}
-        log.info("tabel '%s': %d rijen, %d kolommen gefit", name, df.height, df.width)
+        if excluded_info:
+            table_info[name]["uitgesloten"] = excluded_info
+            log.info(
+                "tabel '%s': %d kolom(men) uitgesloten (vrije tekst): %s",
+                name,
+                len(excluded),
+                ", ".join(excluded),
+            )
+        log.info("tabel '%s': %d rijen, %d kolommen gefit", name, df.height, fit_df.width)
 
     gmf = {
         "gmf_version": GMF_VERSION,
@@ -180,6 +219,19 @@ def column_kinds(gmf: dict[str, Any]) -> dict[str, dict[str, str]]:
     }
 
 
+def excluded_columns(gmf: dict[str, Any]) -> dict[str, list[str]]:
+    """Uitgesloten kolommen (vrije tekst) per tabel; leeg bij een model zonder uitgesloten kolommen.
+
+    Een ouder model zonder ``uitgesloten`` geeft gewoon niets.
+    """
+    tables = tool_info(gmf).get("tabellen", {})
+    return {
+        table: list(data["uitgesloten"])
+        for table, data in tables.items()
+        if isinstance(data, dict) and data.get("uitgesloten")
+    }
+
+
 def expected_schemas(gmf: dict[str, Any]) -> dict[str, dict[str, pl.DataType]]:
     """Kolomnamen en brontypes per tabel volgens het model."""
     stored = tool_info(gmf).get("tabellen", {})
@@ -206,6 +258,7 @@ def synthesize_tables(
     tabel het aantal rijen uit het model.
     """
     schemas = expected_schemas(gmf)
+    excluded = excluded_columns(gmf)
     set_global_seeds(seed)
     result: dict[str, pl.DataFrame] = {}
     for name, metaframe in metaframes(gmf).items():
@@ -227,4 +280,10 @@ def synthesize_tables(
             restored.append(series)
         result[name] = pl.DataFrame(restored)
         log.info("tabel '%s': %d rijen gemaakt", name, n_rows)
+        if excluded.get(name):
+            log.info(
+                "tabel '%s': niet in de uitvoer, uitgesloten (vrije tekst): %s",
+                name,
+                ", ".join(excluded[name]),
+            )
     return result

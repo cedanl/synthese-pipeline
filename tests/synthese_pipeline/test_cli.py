@@ -10,7 +10,7 @@ import pytest
 from synthese_pipeline import __version__
 from synthese_pipeline.cli import main
 from synthese_pipeline.report import EXIT_COPIES, EXIT_ERROR, EXIT_OK, EXIT_STRUCTURE, EXIT_USAGE
-from tests.synthese_pipeline.dummy import SENTINEL, results, students
+from tests.synthese_pipeline.dummy import FREETEXT_MARK, SENTINEL, freetext, results, students
 
 
 def test_version(capsys):
@@ -238,3 +238,102 @@ def test_help_lists_exit_codes():
     for code in ("0", "1", "2", "3", "4"):
         assert f"  {code}  " in out
     assert "structuur wijkt af" in out
+
+
+def test_freetext_excluded_by_default_and_named_in_log_and_report(tmp_path, capsys):
+    data = tmp_path / "data.csv"
+    freetext().write_csv(data)
+    model = tmp_path / "model.json"
+    fit_log = tmp_path / "fit.log"
+    assert main(["fit", str(data), str(model), "--log", str(fit_log)]) == EXIT_OK
+    gmf_text = model.read_text()
+    assert FREETEXT_MARK not in gmf_text
+    gmf = json.loads(gmf_text)
+    assert set(gmf["synthese_pipeline"]["tabellen"]["data"]["uitgesloten"]) == {
+        "opmerking",
+        "naam",
+    }
+    syn_log = tmp_path / "syn.log"
+    output = tmp_path / "uit.csv"
+    args = ["synthesize", str(model), str(output), "--seed", "1", "--source", str(data)]
+    assert main([*args, "--log", str(syn_log)]) == EXIT_OK
+    synthetic = pl.read_csv(output, schema_overrides={"opleidingscode": pl.String})
+    assert synthetic.columns == ["postcode", "opleidingscode", "cijfer"]
+    report_text = (tmp_path / "uit.rapport.json").read_text()
+    report = json.loads(report_text)
+    assert report["tabellen"]["data"]["uitgesloten"] == ["opmerking", "naam"]
+    for text in (fit_log.read_text(), syn_log.read_text(), report_text):
+        assert FREETEXT_MARK not in text
+    assert "uitgesloten (vrije tekst): opmerking, naam" in fit_log.read_text()
+    assert "uitgesloten (vrije tekst): opmerking, naam" in syn_log.read_text()
+    capsys.readouterr()
+    assert main(["toon", str(model)]) == EXIT_OK
+    assert "- opmerking: uitgesloten (vrije tekst)" in capsys.readouterr().out
+
+
+def test_faker_option_on_fit(tmp_path):
+    data = tmp_path / "data.csv"
+    freetext().write_csv(data)
+    model = tmp_path / "model.json"
+    args = [
+        "fit",
+        str(data),
+        str(model),
+        "--faker",
+        "naam=name",
+        "--faker",
+        "data.opmerking=sentence",
+    ]
+    assert main(args) == EXIT_OK
+    gmf_text = model.read_text()
+    assert FREETEXT_MARK not in gmf_text
+    kolommen = json.loads(gmf_text)["synthese_pipeline"]["tabellen"]["data"]["kolommen"]
+    assert kolommen["naam"]["soort"] == "faker"
+    assert kolommen["opmerking"]["soort"] == "faker"
+    output = tmp_path / "uit.csv"
+    assert main(["synthesize", str(model), str(output), "--seed", "1"]) == EXIT_OK
+    synthetic = pl.read_csv(output, schema_overrides={"opleidingscode": pl.String})
+    assert synthetic.columns == freetext().columns
+    real = freetext()
+    for column in ("naam", "opmerking"):
+        assert set(synthetic[column].to_list()).isdisjoint(real[column].to_list())
+
+
+def test_type_override_reincludes_freetext(tmp_path):
+    data = tmp_path / "data.csv"
+    freetext().write_csv(data)
+    model = tmp_path / "model.json"
+    assert main(["fit", str(data), str(model), "--type", "naam=text"]) == EXIT_OK
+    gmf = json.loads(model.read_text())
+    assert gmf["synthese_pipeline"]["tabellen"]["data"]["kolommen"]["naam"]["soort"] == "text"
+    assert list(gmf["synthese_pipeline"]["tabellen"]["data"]["uitgesloten"]) == ["opmerking"]
+
+
+@pytest.mark.parametrize(
+    ("option", "message"),
+    [
+        ("naam=bestaatniet", "bestaatniet"),
+        ("onbekend=name", "--faker noemt kolom 'onbekend'"),
+        ("naam", "kolom=provider"),
+    ],
+)
+def test_faker_errors_exit_non_zero(tmp_path, capsys, option, message):
+    data = tmp_path / "data.csv"
+    freetext().write_csv(data)
+    model = tmp_path / "model.json"
+    assert main(["fit", str(data), str(model), "--faker", option]) == EXIT_ERROR
+    err = capsys.readouterr().err
+    assert message in err
+    assert FREETEXT_MARK not in err
+    assert not model.exists()
+
+
+def test_fit_help_lists_new_kinds_and_faker():
+    out = subprocess.run(
+        [sys.executable, "-m", "synthese_pipeline.cli", "fit", "--help"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "freetext" in out and "faker" in out
+    assert "--faker" in out

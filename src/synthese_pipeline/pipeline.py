@@ -13,10 +13,11 @@ from typing import Any
 
 import polars as pl
 
-from synthese_pipeline.column_types import parse_type_overrides
+from synthese_pipeline.column_types import parse_faker_overrides, parse_type_overrides
 from synthese_pipeline.errors import SyntheseError
 from synthese_pipeline.model import (
     column_kinds,
+    excluded_columns,
     expected_schemas,
     fit_tables,
     load_model,
@@ -49,15 +50,21 @@ def run_fit(
     model_path: str | Path,
     *,
     types: list[str] | None = None,
+    fakers: list[str] | None = None,
     disclosure: bool = True,
     storage_options: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Lees de bron, fit het model en schrijf alleen het GMF-bestand."""
+    """Lees de bron, fit het model en schrijf alleen het GMF-bestand.
+
+    ``types`` zijn ``kolom=soort``-regels (``--type``), ``fakers`` ``kolom=provider``-regels
+    (``--faker``).
+    """
     overrides = parse_type_overrides(types)
+    faker_types = parse_faker_overrides(fakers)
     tables = read_tables(source, storage_options=storage_options)
     _log_tables(tables, "bron gelezen")
     log.info("disclosure control: %s", "aan" if disclosure else "UIT")
-    gmf = fit_tables(tables, overrides=overrides, disclosure=disclosure)
+    gmf = fit_tables(tables, overrides=overrides, fakers=faker_types, disclosure=disclosure)
     save_model(gmf, model_path)
     log.info("model geschreven met %d tabel(len)", len(gmf["tables"]))
     return gmf
@@ -117,6 +124,7 @@ def run_synthesize(
         gmf_tool_info=tool_info(gmf),
         expected=expected_schemas(gmf),
         kinds=column_kinds(gmf),
+        excluded=excluded_columns(gmf),
         synthetic=synthetic,
         real=real,
         seed=used_seed,

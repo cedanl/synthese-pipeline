@@ -60,11 +60,13 @@ Elke kolom krijgt een soort. De tool leidt die af uit het datatype en de waarden
 | Soort | Wanneer | Wat metasyn ervan maakt |
 |---|---|---|
 | `categorical` | waar/onwaar; een geheel getal met hooguit 12 unieke waarden of tekst met hooguit 30, en hooguit half zoveel unieke als ingevulde waarden (bijv. Likert 1-5, M/V) | een keuze uit de categorieën met hun kansen |
-| `key` | geheel getal of tekst, geen lege waarden, alle waarden uniek, minstens 20 rijen | unieke waarden |
+| `freetext` | tekst die op vrije tekst lijkt: meer dan de helft van de ingevulde waarden heeft een spatie, of de waarden zijn gemiddeld minstens 20 tekens lang, en het is geen code (zie hieronder) | niets: de kolom gaat niet in het model en ontbreekt in de synthetische data |
+| `key` | geheel getal of tekst, geen lege waarden, alle waarden uniek, minstens 20 rijen | unieke waarden; bij een code een uniek patroon |
 | `discrete` | overige gehele getallen, ook kommagetallen die allemaal op ,0 eindigen | een verdeling van gehele getallen |
 | `continuous` | overige kommagetallen | een continue verdeling |
 | `date` | datum, datum met tijd, tijd | een verdeling van datums |
-| `text` | overige tekst | metasyn kiest zelf (vrije tekst volgt in #4) |
+| `text` | overige tekst | bij een code een patroon, anders kiest metasyn zelf |
+| `faker` | alleen als je het zelf kiest met `--faker` | verzonnen waarden van [Faker](https://faker.readthedocs.io/) (`nl_NL`) |
 
 Gehele getallen met lege waarden blijven gehele getallen. Wijkt een kolom af, geef dan zelf de soort op bij `fit`, eventueel voor één tabel:
 
@@ -72,10 +74,30 @@ Gehele getallen met lege waarden blijven gehele getallen. Wijkt een kolom af, ge
 uv run synthese-pipeline fit bron/ model.json --type opleidingscode=categorical --type studenten.leeftijd=discrete
 ```
 
+Een **code** heeft een vaste vorm: tel elk cijfer als `9`, elke hoofdletter als `A` en elke kleine letter als `a`. Minstens 95% van de waarden heeft dan een van hooguit drie vormen, met een cijfer en hooguit 12 tekens, zoals postcodes (`1234 AB`, vorm `9999 AA`) of opleidingscodes (`34567`). Een code is nooit `freetext`. Het patroon in het model wordt gemaakt uit alleen die vormen (`[0-9]{4} [A-Z]{2}`), niet uit de waarden, en alleen vormen die minstens 10 keer voorkomen tellen mee. Zo blijft de vorm behouden, ook met disclosure control. `B Informatica` is geen code: die heeft geen cijfer en geen vaste vorm.
+
+### Vrije tekst
+
+Vrije tekst, zoals opmerkingen of "voornaam achternaam", kan letterlijk namen en andere gegevens bevatten. Daarom gaat een kolom van soort `freetext` **standaard niet in het model**. Het model noemt de kolom alleen met naam en brontype (`synthese_pipeline.tabellen.<tabel>.uitgesloten`); `toon` laat hem zien als "uitgesloten (vrije tekst)". De synthetische data heeft die kolom niet. Het log en het rapport (`tabellen.<tabel>.uitgesloten`) noemen de uitgesloten kolommen, alleen met hun naam. De structuurcontrole telt ze niet mee.
+
+Wil je de kolom toch, dan zijn er twee keuzes:
+
+| Keuze | Wat er gebeurt |
+|---|---|
+| `--type opmerking=text` | De kolom gaat als gewone tekst in het model. Kijk het model dan na met `toon`. |
+| `--faker opmerking=sentence` | De kolom krijgt verzonnen waarden van Faker (`nl_NL`), zonder iets uit de echte data. Ook `tabel.kolom=provider`; mag vaker. |
+
+Een provider is een functie van Faker die tekst maakt, bijvoorbeeld `name`, `first_name`, `last_name`, `email`, `city`, `street_address`, `sentence` of `text` (zie de [lijst van providers](https://faker.readthedocs.io/en/master/locales/nl_NL.html)). Een onbekende provider of kolom geeft een fout. Faker verzint de waarden, maar een verzonnen naam kan bij toeval gelijk zijn aan een echte naam. Met `--type kolom=freetext` sluit je zelf een kolom uit.
+
+```bash
+uv run synthese-pipeline fit bron.csv model.json --faker naam=name --faker opmerking=sentence
+```
+
 ### Privacy
 
 - **Disclosure control staat standaard aan.** `fit` gebruikt de plugin [metasyn-disclosure](https://github.com/sodascience/metasyn-disclosure-control) (versie 0.3.3). Zeldzame waarden en uitschieters, zoals een leeftijd die maar bij één persoon voorkomt, komen dan niet letterlijk in het model. Het model (`synthese_pipeline.disclosure_control` en `provenance`) en het rapport vermelden of de plugin aan stond. Uitzetten kan met `--no-disclosure`; dat is afgeraden.
 - **Logs en rapporten bevatten geen waarden uit de data**, alleen tabelnamen, kolomnamen, datatypes, aantallen en scores. Met `--log PAD` schrijven `fit` en `synthesize` dezelfde regels ook naar een bestand. Een onverwachte fout toont alleen het soort fout, omdat de melding waarden kan bevatten.
+- **Vrije tekst gaat standaard niet in het model** (zie [Vrije tekst](#vrije-tekst)).
 - Het model zelf bevat wel samenvattingen van de data, zoals categorieën en grenzen. Lees het na met `toon` voordat het de beveiligde omgeving verlaat.
 
 ### Rapport
@@ -83,7 +105,7 @@ uv run synthese-pipeline fit bron/ model.json --type opleidingscode=categorical 
 `synthesize` schrijft een rapport (JSON) met:
 
 - de versie van synthese-pipeline en metasyn, de seed, en of disclosure control aan stond;
-- per tabel: of de structuur gelijk is (kolommen, volgorde, datatypes) met de afwijkingen;
+- per tabel: of de structuur gelijk is (kolommen, volgorde, datatypes) met de afwijkingen, en welke kolommen zijn uitgesloten (vrije tekst);
 - met `--source BRON`: per kolom een verdelingsmaat (TV-afstand voor categorieën, Wasserstein-afstand voor getallen, in dagen voor datums), het aandeel lege waarden echt en synthetisch, nieuwe categorieën, en het aantal **letterlijke kopieën**: synthetische rijen die gelijk zijn aan een rij die in de echte data maar één keer voorkomt.
 
 Zonder `--source` vergelijkt het rapport de structuur met het model en staan de kopieën op "niet gecontroleerd"; de exitcode verandert daar niet door. Zonder `--seed` kiest de tool een seed en zet die in het rapport. Hetzelfde model met dezelfde seed geeft dezelfde data.

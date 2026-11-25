@@ -58,6 +58,8 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         epilog=(
             f"soorten voor --type: {', '.join(KINDS)}\n"
+            "vrije tekst (soort freetext) gaat standaard niet in het model; --type kolom=text\n"
+            "neemt de kolom toch op, --faker kolom=provider vult hem met verzonnen waarden.\n"
             f"abfss://-paden: het token komt uit de omgevingsvariabele {TOKEN_ENV}.\n\n" + EXIT_HELP
         ),
         formatter_class=formatter,
@@ -75,6 +77,14 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="KOLOM=SOORT",
         help="soort van een kolom zelf opgeven, bijv. --type opleidingscode=categorical of "
         "--type studenten.leeftijd=discrete (mag vaker)",
+    )
+    fit.add_argument(
+        "--faker",
+        dest="fakers",
+        action="append",
+        metavar="KOLOM=PROVIDER",
+        help="kolom vullen met verzonnen waarden van Faker (nl_NL), bijv. --faker naam=name of "
+        "--faker studenten.opmerking=sentence (mag vaker)",
     )
     fit.add_argument(
         "--no-disclosure",
@@ -138,7 +148,13 @@ def _run(args: argparse.Namespace) -> int:
         return 0
     with run_logging(args.log):
         if args.command == "fit":
-            run_fit(args.source, args.model, types=args.types, disclosure=not args.no_disclosure)
+            run_fit(
+                args.source,
+                args.model,
+                types=args.types,
+                fakers=args.fakers,
+                disclosure=not args.no_disclosure,
+            )
             return 0
         result = run_synthesize(
             args.model,
