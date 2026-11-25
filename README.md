@@ -16,6 +16,18 @@ cd synthese-pipeline
 uv sync
 ```
 
+## Data
+
+| | Wat | Waar |
+|---|---|---|
+| Invoer | Eén tabel of een map met tabellen: CSV, Parquet of Delta, ook in OneLake (`abfss://`). SPSS (`.sav`) wordt nog niet gelezen ([#7](https://github.com/cedanl/synthese-pipeline/issues/7)). | `data/01-raw/` (zoals geleverd) of `data/02-prepared/` (voorbewerkt) |
+| Model | Een GMF-bestand (JSON) van metasyn, met per kolom een verdeling | gemaakt in de beveiligde omgeving; alleen dit bestand gaat naar buiten |
+| Uitvoer | Synthetische data: CSV of Parquet bij een bestand als doel, anders per tabel een Delta-tabel (of met `--format` CSV of Parquet), plus een rapport (JSON) | `data/03-output/` of een aparte lakehouse |
+
+**`fit` is de privacygrens.** De tool leest de data in `01-raw` of `02-prepared` zoals de instelling die aanlevert, in de beveiligde omgeving. Alleen het GMF-bestand verlaat die omgeving. `synthesize` en `toon` gebruiken alleen het model, nooit de echte data (behalve `synthesize --source`, en dat draait dan weer binnen). Lees het model na met `toon` voordat het naar buiten gaat (zie [Privacy](#privacy)).
+
+Echte data staat nooit in git: `.gitignore` laat in `data/` alleen de mappen `demo/` toe. De tests gebruiken alleen gegenereerde dummydata.
+
 ## Gebruik
 
 De tool werkt in twee stappen. In de beveiligde omgeving maakt `fit` een model (een GMF-bestand) uit de echte data. Alleen dat bestand gaat naar buiten. Daarna maakt `synthesize` synthetische data uit alleen het model.
@@ -200,6 +212,75 @@ Zonder `--source` vergelijkt het rapport de structuur met het model en staan de 
 | 4 | letterlijke kopieën van echte rijen gevonden (gaat voor 3 en 5) |
 | 5 | relaties tussen tabellen kloppen niet: wezen of dubbele sleutels (3 gaat voor) |
 
+### Voorbeeld van de uitvoer
+
+Op dummydata, zonder echte data: eerst dummydata uit [`examples/spec.toml`](examples/spec.toml), daarna een model uit die dummydata en synthetische data met een vergelijking.
+
+```bash
+uv run synthese-pipeline synthesize --spec examples/spec.toml --rows 100 --format csv uit --seed 1
+uv run synthese-pipeline fit uit/studenten.csv model.json
+uv run synthese-pipeline synthesize model.json syn.csv --source uit/studenten.csv --seed 1
+```
+
+Uitvoer van de laatste opdracht:
+
+```text
+2026-11-25 12:47:38,762 INFO bron gelezen voor de vergelijking: 1 tabel(len)
+2026-11-25 12:47:38,762 INFO tabel 'studenten': 100 rijen, 5 kolommen
+2026-11-25 12:47:38,820 INFO tabel 'studenten': 100 rijen gemaakt
+2026-11-25 12:47:38,822 INFO synthetische data geschreven: 1 tabel(len)
+2026-11-25 12:47:38,832 INFO rapport geschreven; structuur gelijk: ja; letterlijke kopieën: 0; exitcode 0
+rapport: syn.rapport.json (geslaagd)
+```
+
+Een deel van `syn.rapport.json` (`…` is weggelaten). Er staan alleen namen, aantallen en scores in:
+
+```json
+{
+  "synthese_pipeline": "0.1.0",
+  "metasyn": "3.1.0",
+  "seed": 1,
+  "disclosure_control": {
+    "gebruikt": true,
+    "plugin": "metasyn-disclosure",
+    "versie": "0.3.3",
+    …
+  },
+  "bron_vergeleken": true,
+  "structuur": {
+    "gelijk": true,
+    "afwijkingen": []
+  },
+  "letterlijke_kopieen": 0,
+  "tabellen": {
+    "studenten": {
+      "rijen": 100,
+      "kolommen": 5,
+      "verdelingen": {
+        "tevredenheid": {
+          "soort": "categorical",
+          "aandeel_leeg_echt": 0.1,
+          "aandeel_leeg_synthetisch": 0.1,
+          "maat": "tv_afstand",
+          "waarde": 0.0222222222222222
+        },
+        "inschrijfdatum": {
+          "soort": "date",
+          "aandeel_leeg_echt": 0.0,
+          "aandeel_leeg_synthetisch": 0.0,
+          "maat": "wasserstein_dagen",
+          "waarde": 9.02
+        },
+        …
+      },
+      "letterlijke_kopieen": 0
+    }
+  },
+  "exitcode": 0,
+  "uitkomst": "geslaagd"
+}
+```
+
 ## Ontwikkeling
 
 ```bash
@@ -207,11 +288,27 @@ uv sync --group dev
 uv run pytest
 uv run ruff check src tests
 uv run ruff format --check src tests
+uv run ty check
 ```
 
 Tests gebruiken alleen gegenereerde dummydata (`tests/synthese_pipeline/dummy.py`).
 
 Een devcontainer staat in `.devcontainer/`.
+
+## Achtergrond en verwijzingen
+
+- [metasyn](https://github.com/sodascience/metasyn) (MIT) van ODISSEI Social Data Science (SoDa), met Research Engineering van de Universiteit Utrecht: modelleert elke kolom los en slaat het model op als GMF. Documentatie: [metasyn.readthedocs.io](https://metasyn.readthedocs.io/).
+- [metasyn-disclosure](https://github.com/sodascience/metasyn-disclosure-control) (MIT): de plugin voor disclosure control, volgens de vuistregels van het CBS.
+- **ONS-niveau 3.** Op de schaal van het Britse ONS (1 tot 6) levert metasyn niveau 3: plausibele synthetische data met de juiste structuur en verdelingen per kolom, zonder verbanden tussen kolommen ([metasyn FAQ](https://metasyn.readthedocs.io/en/latest/faq.html)). Voor analyses met verbanden is deze data niet bedoeld.
+- Het onderzoek en de keuzes achter deze tool staan in [#1](https://github.com/cedanl/synthese-pipeline/issues/1).
+- Synthese met verbanden tussen kolommen (SDV) zit in [edusynth](https://github.com/cedanl/edusynth).
+- Deze repo volgt de [CEDA-standaarden](https://github.com/cedanl/.github/blob/main/docs/standards/index.md).
+
+## Contact en bijdragen
+
+- Een vraag, fout of idee: maak een [issue](https://github.com/cedanl/synthese-pipeline/issues) aan. Zet daar nooit echte data in, ook geen voorbeelden of foutmeldingen met waarden: alleen kolomnamen, types en aantallen.
+- Bijdragen gaan via een pull request naar `main`. De CI draait ruff, ty en pytest op Linux en Windows (zie [Ontwikkeling](#ontwikkeling)); tests gebruiken alleen gegenereerde dummydata.
+- De repo wordt onderhouden door CEDA.
 
 ## Licentie
 
