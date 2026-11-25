@@ -30,7 +30,7 @@ Bewuste keuzes waar deze repo afwijkt van de CEDA-standaarden, elk met de reden:
 
 - **Geen app** (`app/`, Streamlit): de tool is een stap in de pipeline van een instelling; een app is een No-Go in #1.
 - **`argparse` in plaats van typer/rich**: alleen de standaardbibliotheek, dus een kleinere wheelhouse voor een offline installatie in Fabric.
-- **Delta als standaarduitvoer** voor een map of lakehouse als doel (zonder `--format`): Fabric-lakehouses werken met Delta-tabellen. Een doel `uit.csv` of `uit.parquet`, of `--format csv`/`parquet`, geeft dat formaat (dataconventies voor lokale uitvoer: #24).
+- **Delta als standaarduitvoer** voor een map of lakehouse als doel (zonder `--format`): Fabric-lakehouses werken met Delta-tabellen. Een doel `uit.csv` of `uit.parquet`, of `--format csv`/`parquet`, geeft dat formaat; voor een lokale map is `--format parquet,csv` (allebei) de aanbevolen keuze. CSV volgt de dataconventies: `;`, UTF-8, tekst tussen aanhalingstekens; `--csv-separator ","` voor een komma (#24).
 - **hatchling als build-backend**: werkt met de src-layout en `uv build`; `uv build` en `twine check` slagen ermee in de CI.
 - **Exacte pins** van metasyn, metasyn-disclosure en faker: de offline wheelhouse moet overal dezelfde versies hebben, en dat hetzelfde model met dezelfde seed dezelfde data geeft, is alleen met dezelfde versies zeker.
 - **Geen vaste `data_dictionary.csv`**: het schema is van de instelling, niet van deze repo; het GMF, `toon` en het rapport laten per kolom de soort en het datatype zien.
@@ -81,4 +81,4 @@ uv run ty check
 
 ## Data
 
-Invoer: CSV, Parquet of Delta (map of `abfss://`); SPSS (.sav) nog niet (#7). Uitvoer: een GMF-bestand (model) en synthetische data als Delta, Parquet of CSV, met een rapport. Echte data staat nooit in git; alleen `data/*/demo/`.
+Invoer: CSV, Parquet of Delta (map of `abfss://`); SPSS (.sav) nog niet (#7). Uitvoer: een GMF-bestand (model) en synthetische data als Delta, Parquet, CSV (`;`, UTF-8) of Parquet en CSV samen, met een rapport. Echte data staat nooit in git; alleen `data/*/demo/`.
