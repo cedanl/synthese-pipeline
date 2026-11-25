@@ -28,9 +28,11 @@ uv run synthese-pipeline synthesize model.json output.csv --rows 1000 --seed 42
 
 | Opdracht | Wat het doet |
 |---|---|
-| `fit BRON MODEL` | Leest de bron en schrijft alleen het GMF-bestand. Disclosure control staat aan. |
+| `fit BRON MODEL` | Leest de bron en schrijft alleen het GMF-bestand. Disclosure control staat aan. Met `--spec SPEC` gelden de keuzes uit een [specificatie](#specificatie). |
 | `synthesize MODEL DOEL` | Maakt synthetische data uit alleen het model en schrijft een rapport (JSON) naast de data. |
-| `toon MODEL` | Laat per tabel en kolom in gewone taal zien wat er in het model staat: verdeling en aandeel lege waarden. |
+| `synthesize --spec SPEC DOEL` | Maakt dummydata uit alleen een specificatie, zonder model en zonder bron ([stap 0](#stap-0-dummydata-zonder-data)). |
+| `init-spec BRON SPEC` | Schrijft een ontwerp-specificatie (TOML) uit de bron, zonder waarden uit de data. |
+| `toon MODEL` | Laat per tabel en kolom in gewone taal zien wat er in het model staat: verdeling, aandeel lege waarden en omschrijving. |
 
 `uv run synthese-pipeline <opdracht> --help` toont alle opties.
 
@@ -93,11 +95,55 @@ Een provider is een functie van Faker die tekst maakt, bijvoorbeeld `name`, `fir
 uv run synthese-pipeline fit bron.csv model.json --faker naam=name --faker opmerking=sentence
 ```
 
+### Specificatie
+
+Een specificatie is een TOML-bestand in het [configuratieformaat van metasyn](https://metasyn.readthedocs.io/en/latest/improve_synth.html). Daarin legt de instelling per kolom vast wat ze weet: de soort, een omschrijving, of de kolom uniek is of eruit moet, en eventueel de verdeling. `init-spec` maakt een ontwerp uit de bron:
+
+```bash
+uv run synthese-pipeline init-spec data.csv spec.toml
+uv run synthese-pipeline fit data.csv model.json --spec spec.toml
+```
+
+Het ontwerp bevat per kolom de afgeleide soort, het brontype en een lege `description`. Een kandidaat-sleutel krijgt `distribution = {unique = true}`, vrije tekst `uitgesloten = true`. Er staan geen waarden uit de data in, alleen namen, soorten, types en het aantal rijen. Met `--with-categories` komen de categorieën van categorische kolommen erbij. Dat zijn wel waarden uit de data: het log meldt per kolom hoeveel categorieën minder dan 10 keer voorkomen, en je kijkt het bestand na voordat het de beveiligde omgeving verlaat.
+
+Eén tabel geeft `config_version = "1.2"` met `[[var]]` per kolom (1.0 en 1.1 worden ook gelezen). Meer tabellen geven `config_version = "2.0"` met `[[table]]` per tabel en `[[table.var]]` per kolom. Relaties tussen tabellen worden nog niet ondersteund.
+
+| Sleutel per kolom | Betekenis | Bij `fit --spec` | Bij data-free |
+|---|---|---|---|
+| `name` | kolomnaam (verplicht) | moet in de bron staan | wordt een kolom |
+| `soort` | een [soort](#kolomtypes) | gaat voor de afgeleide soort | bepaalt het type |
+| `description` | omschrijving | komt in het model (`toon`) | komt in het model |
+| `uitgesloten = true` | kolom gaat niet in het model, net als vrije tekst | ja | ja |
+| `distribution` | verdeling van metasyn: `{unique = true}`, of `{implements = "core.uniform", parameters = {lower = 1, upper = 10}}` | met `implements` en `parameters`: die vaste verdeling; met alleen `implements`: metasyn fit die verdeling | nodig, behalve bij `key`, `categorieen` en `faker` |
+| `prop_missing` | aandeel lege waarden (0 tot 1) | gaat voor de data | standaard 0 |
+| `categorieen` | lijst met categorieën | genegeerd (de data bepaalt ze) | gelijke kansen |
+| `faker` | Faker-provider, bijv. `"name"` (soort `faker`) | ja | ja |
+| `brontype` | datatype, bijv. `Int64`, `String`, `Date` | genegeerd (de bron bepaalt het) | type van de kolom in de uitvoer |
+
+Bovenaan mogen `n_rows` (aantal rijen in het model) en bij 1.x `name` (tabelnaam bij data-free) staan. Een onbekende sleutel, versie of soort geeft een fout met exitcode 1, zonder waarden uit het bestand.
+
+**`--type` en `--faker` gaan voor de specificatie.** Noemt de commandoregel een kolom, dan gelden voor die kolom de soort en verdeling van de commandoregel; `description` en `prop_missing` uit de specificatie blijven. Het log meldt per kolom dat de commandoregel voorging.
+
+Zet in `description` nooit echte waarden (namen, nummers, voorbeelden uit de data): de omschrijving gaat mee in het model en in de specificatie.
+
+### Stap 0: dummydata zonder data
+
+Een instelling kan beginnen zonder dat er echte data of een model de beveiligde omgeving verlaat. Ze schrijft een specificatie met per kolom een verdeling, en maakt daar dummydata mee ([data-free in metasyn](https://metasyn.readthedocs.io/en/latest/datafree.html)):
+
+```bash
+uv run synthese-pipeline synthesize --spec examples/spec.toml --rows 100 uit.csv --seed 1
+```
+
+[`examples/spec.toml`](examples/spec.toml) heeft een sleutel, een Likert-item, een code, een datum, een kommagetal en een uitgesloten kolom met vrije tekst. Zonder `--rows` geldt `n_rows` uit de specificatie. Het rapport werkt zoals altijd: de structuur wordt vergeleken met de specificatie, met dezelfde exitcodes, en `data_free` staat op `true`. Dezelfde specificatie met dezelfde seed geeft dezelfde data. Geef `MODEL` en `--spec` niet samen op: dat is een gebruiksfout (exitcode 2).
+
+Zonder data is per kolom een verdeling nodig. Een `key` zonder verdeling wordt een oplopend nummer vanaf 1, een kolom met `categorieen` een keuze met gelijke kansen, en een kolom met `faker` krijgt verzonnen waarden. Een ontwerp van `init-spec` heeft die verdelingen nog niet: vul ze aan. Dummydata uit een specificatie is **niet statistisch geldig**. Ze heeft de juiste kolommen en types, maar de verdelingen zijn wat je opschrijft, niet wat er in de echte data zit. Gebruik ze om code te bouwen en te testen, niet voor uitkomsten.
+
 ### Privacy
 
 - **Disclosure control staat standaard aan.** `fit` gebruikt de plugin [metasyn-disclosure](https://github.com/sodascience/metasyn-disclosure-control) (versie 0.3.3). Zeldzame waarden en uitschieters, zoals een leeftijd die maar bij één persoon voorkomt, komen dan niet letterlijk in het model. Het model (`synthese_pipeline.disclosure_control` en `provenance`) en het rapport vermelden of de plugin aan stond. Uitzetten kan met `--no-disclosure`; dat is afgeraden.
 - **Logs en rapporten bevatten geen waarden uit de data**, alleen tabelnamen, kolomnamen, datatypes, aantallen en scores. Met `--log PAD` schrijven `fit` en `synthesize` dezelfde regels ook naar een bestand. Een onverwachte fout toont alleen het soort fout, omdat de melding waarden kan bevatten.
 - **Vrije tekst gaat standaard niet in het model** (zie [Vrije tekst](#vrije-tekst)).
+- **Een ontwerp-specificatie bevat geen waarden uit de data**, behalve met `--with-categories`. Omschrijvingen schrijft de instelling zelf: zet daar geen echte waarden in.
 - Het model zelf bevat wel samenvattingen van de data, zoals categorieën en grenzen. Lees het na met `toon` voordat het de beveiligde omgeving verlaat.
 
 ### Rapport
