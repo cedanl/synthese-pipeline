@@ -1,4 +1,5 @@
-"""De twee stappen van de pipeline als Python-functies: ``run_fit`` en ``run_synthesize``.
+"""De stappen van de pipeline als Python-functies: ``run_init_spec``, ``run_fit`` en
+``run_synthesize``.
 
 De commandoregel (``cli.py``) en een notebook (bijv. in Microsoft Fabric) roepen deze aan.
 """
@@ -17,6 +18,7 @@ from synthese_pipeline.column_types import parse_faker_overrides, parse_type_ove
 from synthese_pipeline.errors import SyntheseError
 from synthese_pipeline.model import (
     column_kinds,
+    data_free_model,
     excluded_columns,
     expected_schemas,
     fit_tables,
@@ -26,6 +28,7 @@ from synthese_pipeline.model import (
     tool_info,
 )
 from synthese_pipeline.report import build_report, default_report_path, write_report
+from synthese_pipeline.spec import build_draft, load_spec, write_spec
 from synthese_pipeline.storage import (
     is_remote,
     is_single_file_target,
@@ -45,6 +48,29 @@ def _log_tables(tables: dict[str, pl.DataFrame], what: str) -> None:
         log.info("tabel '%s': %d rijen, %d kolommen", name, df.height, df.width)
 
 
+def run_init_spec(
+    source: str | Path,
+    spec_path: str | Path,
+    *,
+    with_categories: bool = False,
+    storage_options: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Lees de bron en schrijf een ontwerp-specificatie (TOML).
+
+    Zonder ``with_categories`` staan er geen waarden uit de bron in het bestand.
+    """
+    tables = read_tables(source, storage_options=storage_options)
+    _log_tables(tables, "bron gelezen")
+    draft = build_draft(tables, with_categories=with_categories)
+    write_spec(draft, spec_path)
+    log.info(
+        "specificatie geschreven (config_version %s); categorieën: %s",
+        draft["config_version"],
+        "opgenomen, kijk het bestand na" if with_categories else "niet opgenomen",
+    )
+    return draft
+
+
 def run_fit(
     source: str | Path,
     model_path: str | Path,
@@ -52,19 +78,29 @@ def run_fit(
     types: list[str] | None = None,
     fakers: list[str] | None = None,
     disclosure: bool = True,
+    spec: str | Path | None = None,
     storage_options: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Lees de bron, fit het model en schrijf alleen het GMF-bestand.
 
     ``types`` zijn ``kolom=soort``-regels (``--type``), ``fakers`` ``kolom=provider``-regels
-    (``--faker``).
+    (``--faker``); die gaan voor de specificatie ``spec`` (TOML).
     """
     overrides = parse_type_overrides(types)
     faker_types = parse_faker_overrides(fakers)
+    loaded_spec = load_spec(spec) if spec is not None else None
     tables = read_tables(source, storage_options=storage_options)
     _log_tables(tables, "bron gelezen")
     log.info("disclosure control: %s", "aan" if disclosure else "UIT")
-    gmf = fit_tables(tables, overrides=overrides, fakers=faker_types, disclosure=disclosure)
+    if loaded_spec is not None:
+        log.info("specificatie gebruikt (config_version %s)", loaded_spec.version)
+    gmf = fit_tables(
+        tables,
+        overrides=overrides,
+        fakers=faker_types,
+        disclosure=disclosure,
+        spec=loaded_spec,
+    )
     save_model(gmf, model_path)
     log.info("model geschreven met %d tabel(len)", len(gmf["tables"]))
     return gmf
@@ -84,7 +120,7 @@ class SynthesizeResult:
 
 
 def run_synthesize(
-    model_path: str | Path,
+    model_path: str | Path | None,
     target: str | Path,
     *,
     rows: int | None = None,
@@ -92,13 +128,18 @@ def run_synthesize(
     fmt: str | None = None,
     source: str | Path | None = None,
     report_path: str | Path | None = None,
+    spec: str | Path | None = None,
     storage_options: dict[str, str] | None = None,
 ) -> SynthesizeResult:
     """Maak synthetische data uit alleen het GMF, schrijf die weg met een rapport.
 
-    Met ``source`` wordt de synthetische data ook met de echte data vergeleken (verdelingen,
-    letterlijke kopieën). Zonder ``seed`` wordt er een gekozen en in het rapport gezet.
+    Met ``spec`` in plaats van ``model_path`` komt het model uit alleen de specificatie
+    (data-free, zonder model en zonder bron). Met ``source`` wordt de synthetische data ook met
+    de echte data vergeleken (verdelingen, letterlijke kopieën). Zonder ``seed`` wordt er een
+    gekozen en in het rapport gezet.
     """
+    if (model_path is None) == (spec is None):
+        raise SyntheseError("Geef een model of een specificatie (--spec), niet allebei of geen.")
     if rows is not None and rows < 1:
         raise SyntheseError("--rows moet minstens 1 zijn.")
     if seed is not None and not 0 <= seed <= MAX_SEED:
@@ -109,7 +150,13 @@ def run_synthesize(
             raise SyntheseError("Geef bij een abfss://-doel met --report op waar het rapport komt.")
         report_path = default_report_path(target, is_single_file_target(target))
 
-    gmf = load_model(model_path)
+    if spec is not None:
+        loaded_spec = load_spec(spec)
+        log.info("data-free: model uit de specificatie (config_version %s)", loaded_spec.version)
+        gmf = data_free_model(loaded_spec, rows=rows)
+    else:
+        assert model_path is not None
+        gmf = load_model(model_path)
     real = None
     if source is not None:
         real = read_tables(source, storage_options=storage_options)

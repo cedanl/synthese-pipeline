@@ -90,7 +90,9 @@ def describe_model(gmf: dict[str, Any]) -> str:
     kinds = column_kinds(gmf)
     excluded = excluded_columns(gmf)
     disclosure = info.get("disclosure_control", {})
-    if disclosure.get("gebruikt") is True:
+    if info.get("data_free"):
+        disclosure_text = "niet van toepassing (gemaakt uit alleen de specificatie)"
+    elif disclosure.get("gebruikt") is True:
         disclosure_text = f"aan ({disclosure.get('plugin')} {disclosure.get('versie')})"
     elif disclosure.get("gebruikt") is False:
         disclosure_text = "uit"
@@ -111,5 +113,7 @@ def describe_model(gmf: dict[str, Any]) -> str:
                 f"- {var['name']} ({kind_text}): {describe_distribution(var['distribution'])}; "
                 f"lege waarden: {_percent(var.get('prop_missing', 0.0))}"
             )
+            if var.get("description"):
+                lines.append(f"  omschrijving: {var['description']}")
         lines.extend(f"- {column}: uitgesloten (vrije tekst)" for column in skipped)
     return "\n".join(lines)

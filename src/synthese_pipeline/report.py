@@ -249,6 +249,7 @@ def build_report(
         "metasyn": version("metasyn"),
         "seed": seed,
         "disclosure_control": disclosure,
+        "data_free": bool(gmf_tool_info.get("data_free", False)),
         "bron_vergeleken": real is not None,
         "structuur": {"gelijk": structure_equal, "afwijkingen": general},
         "letterlijke_kopieen": copies,
