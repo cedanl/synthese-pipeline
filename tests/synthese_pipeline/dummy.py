@@ -170,3 +170,28 @@ def linked_tables(seed: int = 5) -> dict[str, pl.DataFrame]:
         }
     )
     return {"student": student, "inschrijving": inschrijving, "resultaat": resultaat}
+
+
+def keyed_tables(
+    seed: int = 6, *, low: int = 81_234_000, high: int = 81_240_000
+) -> dict[str, pl.DataFrame]:
+    """Sleuteltabel met niet-opeenvolgende gehele sleutels plus een tabel die ernaar verwijst.
+
+    ``studenten.studentnummer`` heeft 200 unieke waarden uit ``[low, high)`` (met gaten, dus
+    niet opeenvolgend); ``resultaten.studentnummer`` verwijst er 300 keer naar.
+    """
+    rng = np.random.default_rng(seed)
+    keys = sorted(int(x) for x in rng.choice(np.arange(low, high), 200, replace=False))
+    student = pl.DataFrame(
+        {
+            "studentnummer": pl.Series(keys, dtype=pl.Int64),
+            "tevredenheid": pl.Series(rng.integers(1, 6, 200), dtype=pl.Int64),
+        }
+    )
+    resultaat = pl.DataFrame(
+        {
+            "studentnummer": pl.Series(rng.choice(keys, 300).tolist(), dtype=pl.Int64),
+            "cijfer": pl.Series(np.round(rng.uniform(1, 10, 300), 1), dtype=pl.Float64),
+        }
+    )
+    return {"studenten": student, "resultaten": resultaat}
