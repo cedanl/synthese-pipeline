@@ -1,0 +1,82 @@
+name: Preview on TestPyPI
+
+# Publishes a preview build X.Y.Z.devN to TestPyPI with Trusted Publishing (OIDC, no API tokens).
+# N is the run number of this workflow; the version is set in the runner only, never committed.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+
+      - name: Set preview version
+        env:
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          uv run --no-project python - <<'EOF'
+          import os
+          import re
+          import sys
+          import tomllib
+          from pathlib import Path
+
+          path = Path("pyproject.toml")
+          text = path.read_text(encoding="utf-8")
+          base = tomllib.loads(text)["project"]["version"].split(".dev")[0]
+          preview = f"{base}.dev{os.environ['RUN_NUMBER']}"
+          text, count = re.subn(
+              r'^version = "[^"]*"$', f'version = "{preview}"', text, count=1, flags=re.M
+          )
+          if count != 1 or tomllib.loads(text)["project"]["version"] != preview:
+              print("::error::Could not set the preview version in pyproject.toml.")
+              sys.exit(1)
+          path.write_text(text, encoding="utf-8")
+          print(f"Preview version: {preview}")
+          EOF
+
+      - name: Build
+        run: uv build
+
+      - name: Check package metadata
+        run: uvx twine check --strict dist/*
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
