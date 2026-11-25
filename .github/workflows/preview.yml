@@ -2,6 +2,9 @@ name: Preview on TestPyPI
 
 # Publishes a preview build X.Y.Z.devN to TestPyPI with Trusted Publishing (OIDC, no API tokens).
 # N is the run number of this workflow; the version is set in the runner only, never committed.
+# The publish job runs only when the repository variable in its `if:` is 'true', so main
+# stays green until an admin has set up the TestPyPI Trusted Publisher and the `testpypi`
+# environment (README, "Publiceren instellen"). Without it the job is skipped, not failed.
 
 on:
   push:
@@ -64,6 +67,7 @@ jobs:
 
   publish:
     needs: build
+    if: vars.PUBLISH_ENABLED == 'true'
     runs-on: ubuntu-latest
     environment: testpypi
     permissions:
