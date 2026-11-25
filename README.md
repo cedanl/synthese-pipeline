@@ -304,6 +304,63 @@ Tests gebruiken alleen gegenereerde dummydata (`tests/synthese_pipeline/dummy.py
 
 Een devcontainer staat in `.devcontainer/`.
 
+## Release maken
+
+Het pakket `synthese-pipeline` gaat naar [PyPI](https://pypi.org/p/synthese-pipeline) via Trusted Publishing: GitHub Actions logt in met een kortlevend OIDC-token, er staan geen API-tokens in de repo. Een versie op PyPI is definitief: dezelfde versie kan niet opnieuw worden geüpload.
+
+1. **Versie ophogen.** Op een branch, via een pull request naar `main`:
+
+   ```bash
+   uv version --bump patch   # of minor / major
+   ```
+
+   Dit past `version` in `pyproject.toml` en `uv.lock` samen aan. Pas je alleen `pyproject.toml` aan, dan faalt `uv sync --locked` in de CI.
+2. **Taggen.** Na de merge, op de bijgewerkte `main`:
+
+   ```bash
+   git switch main && git pull
+   git tag v0.2.0            # v + precies de versie uit pyproject.toml
+   git push origin v0.2.0
+   ```
+
+3. **De workflow** [`pypi-publish.yml`](.github/workflows/pypi-publish.yml) start alleen op een tag `vX.Y.Z` en doet:
+   - controleren dat de tag gelijk is aan `project.version` (tag `v0.2.0` hoort bij versie `0.2.0`); anders stopt hij vóór het publiceren;
+   - testen: ruff, ruff format, ty en pytest, zoals de CI;
+   - bouwen met `uv build` en controleren met `twine check --strict`;
+   - publiceren naar PyPI vanuit de GitHub-omgeving `pypi`, met precies de bestanden die in de bouwstap zijn gemaakt.
+4. **Controleren** in een schone omgeving:
+
+   ```bash
+   uvx --from synthese-pipeline==0.2.0 synthese-pipeline --version
+   # of: python -m venv /tmp/check && /tmp/check/bin/pip install synthese-pipeline==0.2.0
+   ```
+
+5. **Release-notes.** Maak na een geslaagde publicatie een GitHub Release op dezelfde tag, met notes in het Nederlands:
+
+   ```bash
+   gh release create v0.2.0 --title "v0.2.0" --generate-notes
+   ```
+
+   Herschrijf de gegenereerde lijst daarna (`gh release edit v0.2.0 --notes-file notes.md`) tot Nederlandse notes voor gebruikers:
+   - een korte inleiding: wat deze versie oplevert;
+   - kopjes **Nieuw**, **Verbeterd**, **Opgelost** en, als het nodig is, **Let op** (wijzigingen die bestaande pipelines raken, zoals een andere optie of uitvoer);
+   - per punt één zin over wat de gebruiker merkt, met het issue- of PR-nummer (`#22`);
+   - geen echte data, ook geen voorbeeldwaarden uit echte bestanden.
+
+### Preview op TestPyPI
+
+Elke push naar `main` (en een handmatige start via *Actions → Preview on TestPyPI → Run workflow*) draait [`preview.yml`](.github/workflows/preview.yml). Die bouwt een previewversie `X.Y.Z.devN`, waarbij `N` het volgnummer van de workflowrun is. De versie wordt alleen in de runner aangepast, niet gecommit. De build gaat naar [TestPyPI](https://test.pypi.org/p/synthese-pipeline) vanuit de GitHub-omgeving `testpypi`; bestanden die er al staan worden overgeslagen.
+
+Een preview proberen: haal alleen het pakket zelf van TestPyPI en de afhankelijkheden van PyPI (op TestPyPI kan iedereen pakketten met dezelfde naam zetten):
+
+```bash
+uvx pip download --no-deps --index-url https://test.pypi.org/simple/ \
+  "synthese-pipeline==0.1.0.dev12" -d /tmp/preview
+uvx --from /tmp/preview/synthese_pipeline-0.1.0.dev12-py3-none-any.whl synthese-pipeline --version
+```
+
+Het volgnummer staat in de log van de stap *Set preview version* en in de lijst met versies op TestPyPI.
+
 ## Achtergrond en verwijzingen
 
 - [metasyn](https://github.com/sodascience/metasyn) (MIT) van ODISSEI Social Data Science (SoDa), met Research Engineering van de Universiteit Utrecht: modelleert elke kolom los en slaat het model op als GMF. Documentatie: [metasyn.readthedocs.io](https://metasyn.readthedocs.io/).
