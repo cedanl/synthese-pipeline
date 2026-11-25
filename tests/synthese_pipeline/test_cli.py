@@ -73,7 +73,7 @@ def test_synthesize_from_model_only(fitted):
     output = work / "output.csv"
     code = main(["synthesize", str(model), str(output), "--rows", "1000", "--seed", "1"])
     assert code == EXIT_OK
-    synthetic = pl.read_csv(output, schema_overrides={"opleidingscode": pl.String})
+    synthetic = pl.read_csv(output, separator=";", schema_overrides={"opleidingscode": pl.String})
     assert synthetic.height == 1000
     assert synthetic.columns == students().columns
     assert set(synthetic["opleidingscode"].to_list()) <= {"01234", "02345", "00456"}
@@ -282,7 +282,7 @@ def test_freetext_excluded_by_default_and_named_in_log_and_report(tmp_path, caps
     output = tmp_path / "uit.csv"
     args = ["synthesize", str(model), str(output), "--seed", "1", "--source", str(data)]
     assert main([*args, "--log", str(syn_log)]) == EXIT_OK
-    synthetic = pl.read_csv(output, schema_overrides={"opleidingscode": pl.String})
+    synthetic = pl.read_csv(output, separator=";", schema_overrides={"opleidingscode": pl.String})
     assert synthetic.columns == ["postcode", "opleidingscode", "cijfer"]
     report_text = (tmp_path / "uit.rapport.json").read_text()
     report = json.loads(report_text)
@@ -317,7 +317,7 @@ def test_faker_option_on_fit(tmp_path):
     assert kolommen["opmerking"]["soort"] == "faker"
     output = tmp_path / "uit.csv"
     assert main(["synthesize", str(model), str(output), "--seed", "1"]) == EXIT_OK
-    synthetic = pl.read_csv(output, schema_overrides={"opleidingscode": pl.String})
+    synthetic = pl.read_csv(output, separator=";", schema_overrides={"opleidingscode": pl.String})
     assert synthetic.columns == freetext().columns
     real = freetext()
     for column in ("naam", "opmerking"):
@@ -362,3 +362,52 @@ def test_fit_help_lists_new_kinds_and_faker():
     ).stdout
     assert "freetext" in out and "faker" in out
     assert "--faker" in out
+
+
+def test_parquet_and_csv_format_for_folder(fitted):
+    work, _, model = fitted
+    target = work / "lokaal"
+    args = ["synthesize", str(model), str(target), "--format", "parquet,csv", "--seed", "1"]
+    assert main(args) == EXIT_OK
+    assert sorted(p.name for p in target.iterdir()) == ["data.csv", "data.parquet", "rapport.json"]
+    parquet = pl.read_parquet(target / "data.parquet")
+    assert parquet.schema == students().schema
+    assert (target / "data.csv").read_text(encoding="utf-8").startswith('"student_id";')
+    csv = pl.read_csv(target / "data.csv", separator=";", schema_overrides=parquet.schema)
+    assert csv.equals(parquet)
+
+
+def test_csv_separator_option(fitted):
+    work, _, model = fitted
+    output = work / "komma.csv"
+    args = ["synthesize", str(model), str(output), "--csv-separator", ",", "--seed", "1"]
+    assert main(args) == EXIT_OK
+    assert output.read_text(encoding="utf-8").startswith('"student_id","geslacht",')
+
+
+@pytest.mark.parametrize(
+    "option",
+    [
+        ["--csv-separator", "|"],
+        ["--csv-separator", "\t"],
+        ["--format", "xml"],
+        ["--format", "csv,csv"],
+        ["--format", "delta,parquet"],
+    ],
+)
+def test_invalid_format_or_separator_is_a_usage_error(tmp_path, capsys, option):
+    with pytest.raises(SystemExit) as exc:
+        main(["synthesize", "m.json", str(tmp_path / "uit"), *option])
+    assert exc.value.code == EXIT_USAGE
+    assert option[0] in capsys.readouterr().err
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_two_formats_with_single_file_target_fail(fitted, capsys):
+    work, _, model = fitted
+    args = ["synthesize", str(model), str(work / "uit.csv"), "--format", "parquet,csv"]
+    assert main(args) == EXIT_ERROR
+    assert "map" in capsys.readouterr().err
+    assert not (work / "uit.csv").exists()
+    assert main(["synthesize", str(model), str(work / "uit.csv"), "--format", "csv"]) == EXIT_OK
+    assert (work / "uit.csv").read_text(encoding="utf-8").startswith('"student_id";')

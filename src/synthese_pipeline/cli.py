@@ -13,7 +13,12 @@ from synthese_pipeline.logs import run_logging
 from synthese_pipeline.model import load_model
 from synthese_pipeline.pipeline import run_fit, run_init_spec, run_synthesize
 from synthese_pipeline.report import EXIT_CODES, EXIT_ERROR
-from synthese_pipeline.storage import OUTPUT_FORMATS, TOKEN_ENV
+from synthese_pipeline.storage import (
+    CSV_SEPARATORS,
+    DEFAULT_CSV_SEPARATOR,
+    TOKEN_ENV,
+    parse_formats,
+)
 
 EXIT_HELP = "exitcodes:\n" + "\n".join(f"  {code}  {text}" for code, text in EXIT_CODES.items())
 
@@ -36,6 +41,13 @@ def _seed(text: str) -> int:
     if not 0 <= value < 2**32:
         raise argparse.ArgumentTypeError("moet tussen 0 en 4294967295 liggen")
     return value
+
+
+def _formats(text: str) -> str:
+    try:
+        return ",".join(parse_formats(text))
+    except SyntheseError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -165,8 +177,18 @@ def build_parser() -> argparse.ArgumentParser:
     synthesize.add_argument(
         "--format",
         dest="fmt",
-        choices=OUTPUT_FORMATS,
-        help="formaat bij een map als doel (standaard delta)",
+        type=_formats,
+        metavar="FORMAAT",
+        help="delta, parquet, csv of parquet,csv (allebei) bij een map als doel (standaard "
+        "delta); parquet,csv kan alleen bij een lokale map",
+    )
+    synthesize.add_argument(
+        "--csv-separator",
+        choices=CSV_SEPARATORS,
+        default=DEFAULT_CSV_SEPARATOR,
+        metavar="TEKEN",
+        help="scheidingsteken voor CSV-uitvoer (standaard ';'; UTF-8, tekst tussen "
+        "aanhalingstekens)",
     )
     synthesize.add_argument(
         "--source",
@@ -225,6 +247,7 @@ def _run(args: argparse.Namespace) -> int:
             rows=args.rows,
             seed=args.seed,
             fmt=args.fmt,
+            csv_separator=args.csv_separator,
             source=args.source,
             report_path=args.report,
             spec=args.spec,

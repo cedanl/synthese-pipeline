@@ -20,6 +20,8 @@ ABFSS_PREFIX = "abfss://"
 TOKEN_ENV = "SYNTHESE_PIPELINE_TOKEN"
 OUTPUT_FORMATS = ("delta", "parquet", "csv")
 FILE_SUFFIXES = {".csv": "csv", ".parquet": "parquet"}
+CSV_SEPARATORS = (";", ",")
+DEFAULT_CSV_SEPARATOR = ";"
 
 _LEADING_ZERO = r"^[+-]?0\d+$"
 _DECIMAL_POINT = r"^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$"
@@ -218,18 +220,63 @@ def infer_text_column(series: pl.Series, *, decimal_comma: bool = False) -> pl.S
     return series
 
 
-def resolve_format(target: str | Path, fmt: str | None) -> str:
-    """Bepaal het uitvoerformaat: uit ``fmt``, de extensie van het doel, of Delta."""
+def parse_formats(fmt: str) -> tuple[str, ...]:
+    """Lees een formaat of een lijst met komma's (``parquet,csv``) als tuple.
+
+    De volgorde is die van :data:`OUTPUT_FORMATS` (Parquet voor CSV), niet die van de invoer.
+    Een onbekend of leeg formaat, een formaat dat twee keer voorkomt of Delta samen met een
+    ander formaat geeft een fout.
+    """
+    kinds = [part.strip().lower() for part in fmt.split(",")]
+    for kind in kinds:
+        if kind not in OUTPUT_FORMATS:
+            raise SyntheseError(
+                f"Onbekend formaat '{kind}'. Kies uit: {', '.join(OUTPUT_FORMATS)}, of "
+                "parquet,csv voor allebei."
+            )
+    if len(set(kinds)) != len(kinds):
+        raise SyntheseError(f"Een formaat staat meer dan één keer in '{fmt}'.")
+    if "delta" in kinds and len(kinds) > 1:
+        raise SyntheseError("Delta kan niet samen met een ander formaat worden geschreven.")
+    return tuple(kind for kind in OUTPUT_FORMATS if kind in kinds)
+
+
+def resolve_formats(target: str | Path, fmt: str | None) -> tuple[str, ...]:
+    """Bepaal de uitvoerformaten: uit ``fmt``, de extensie van het doel, of Delta.
+
+    Meer dan één formaat kan alleen bij een lokale map als doel; naar een ``abfss://``-pad gaat
+    alleen Delta.
+    """
     suffix_kind = None if is_remote(target) else FILE_SUFFIXES.get(Path(target).suffix.lower())
     if fmt is None:
-        return suffix_kind or "delta"
-    if fmt not in OUTPUT_FORMATS:
-        raise SyntheseError(f"Onbekend formaat '{fmt}'. Kies uit: {', '.join(OUTPUT_FORMATS)}.")
-    if suffix_kind is not None and suffix_kind != fmt:
+        return (suffix_kind or "delta",)
+    kinds = parse_formats(fmt)
+    if len(kinds) > 1 and (is_remote(target) or suffix_kind is not None):
         raise SyntheseError(
-            f"Het doel eindigt op '{Path(target).suffix}' maar het formaat is '{fmt}'."
+            f"Het formaat '{','.join(kinds)}' geeft meer dan één bestand per tabel; geef een "
+            "lokale map als doel."
         )
-    return fmt
+    if is_remote(target) and kinds != ("delta",):
+        raise SyntheseError("Naar een abfss://-pad kan alleen Delta worden geschreven.")
+    if suffix_kind is not None and kinds != (suffix_kind,):
+        raise SyntheseError(
+            f"Het doel eindigt op '{Path(target).suffix}' maar het formaat is '{kinds[0]}'."
+        )
+    return kinds
+
+
+def resolve_format(target: str | Path, fmt: str | None) -> str:
+    """Als :func:`resolve_formats`, met de formaten als tekst (``delta`` of ``parquet,csv``)."""
+    return ",".join(resolve_formats(target, fmt))
+
+
+def check_csv_separator(separator: str) -> str:
+    """Geef het scheidingsteken terug als het ``;`` of ``,`` is; anders een fout."""
+    if separator not in CSV_SEPARATORS:
+        raise SyntheseError(
+            "Het scheidingsteken voor CSV moet ';' of ',' zijn, niet een ander teken."
+        )
+    return separator
 
 
 def is_single_file_target(target: str | Path) -> bool:
@@ -242,24 +289,28 @@ def write_tables(
     target: str | Path,
     *,
     fmt: str | None = None,
+    csv_separator: str = DEFAULT_CSV_SEPARATOR,
     storage_options: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """Schrijf tabellen weg en geef per tabel de plek terug.
 
     - ``uit.csv`` of ``uit.parquet``: één bestand (alleen bij één tabel).
     - Een map: per tabel een Delta-tabel ``<map>/<tabel>`` (standaard) of
-      ``<map>/<tabel>.parquet`` / ``<map>/<tabel>.csv``.
+      ``<map>/<tabel>.parquet`` / ``<map>/<tabel>.csv``. Met ``fmt="parquet,csv"`` komen
+      beide bestanden in de map; de teruggegeven plek is dan die van het Parquet-bestand.
     - ``abfss://``: per tabel een Delta-tabel ``<pad>/<tabel>``.
+
+    CSV is UTF-8 (zonder BOM) met ``csv_separator`` (``;`` of ``,``) als scheidingsteken;
+    tekst staat tussen aanhalingstekens, getallen, datums en lege waarden niet.
 
     Bestaande uitvoer wordt overschreven. Er wordt nooit buiten het doel geschreven: een
     ongeldige tabelnaam (zie :func:`check_table_names`) of een symbolische link in de doelmap
     die naar buiten wijst, geeft een fout voordat er iets is geschreven.
     """
     check_table_names(tables)
-    kind = resolve_format(target, fmt)
+    kinds = resolve_formats(target, fmt)
+    check_csv_separator(csv_separator)
     if is_remote(target):
-        if kind != "delta":
-            raise SyntheseError("Naar een abfss://-pad kan alleen Delta worden geschreven.")
         options = storage_options if storage_options is not None else fabric_storage_options()
         base = str(target).rstrip("/")
         written = {}
@@ -278,24 +329,29 @@ def write_tables(
             )
         path.parent.mkdir(parents=True, exist_ok=True)
         (df,) = tables.values()
-        _write_file(df, path, kind)
+        (kind,) = kinds
+        _write_file(df, path, kind, csv_separator)
         return {next(iter(tables)): str(path)}
 
-    outs = {name: path / (name if kind == "delta" else f"{name}.{kind}") for name in tables}
+    outs = {
+        name: [(kind, path / (name if kind == "delta" else f"{name}.{kind}")) for kind in kinds]
+        for name in tables
+    }
     root = path.resolve()
-    for number, out in enumerate(outs.values(), start=1):
-        if out.resolve().parent != root:
+    for number, entries in enumerate(outs.values(), start=1):
+        if any(out.resolve().parent != root for _, out in entries):
             raise SyntheseError(
                 f"Tabel {number} zou buiten de doelmap {path} komen (via een symbolische link). "
                 "Kies een ander doel."
             )
     path.mkdir(parents=True, exist_ok=True)
     for name, df in tables.items():
-        if kind == "delta":
-            _write_delta(df, str(outs[name]), None)
-        else:
-            _write_file(df, outs[name], kind)
-    return {name: str(out) for name, out in outs.items()}
+        for kind, out in outs[name]:
+            if kind == "delta":
+                _write_delta(df, str(out), None)
+            else:
+                _write_file(df, out, kind, csv_separator)
+    return {name: str(entries[0][1]) for name, entries in outs.items()}
 
 
 def _write_delta(df: pl.DataFrame, uri: str, storage_options: dict[str, str] | None) -> None:
@@ -307,8 +363,40 @@ def _write_delta(df: pl.DataFrame, uri: str, storage_options: dict[str, str] | N
     )
 
 
-def _write_file(df: pl.DataFrame, path: Path, kind: str) -> None:
+def _quote(text: str) -> str:
+    return '"' + text.replace('"', '""') + '"'
+
+
+def _write_file(
+    df: pl.DataFrame, path: Path, kind: str, separator: str = DEFAULT_CSV_SEPARATOR
+) -> None:
     if kind == "csv":
-        df.write_csv(path)
+        _write_csv(df, path, separator)
     else:
         df.write_parquet(path)
+
+
+def _write_csv(df: pl.DataFrame, path: Path, separator: str) -> None:
+    """Schrijf CSV volgens de dataconventies: UTF-8, ``separator``, tekst tussen aanhalingstekens.
+
+    polars' ``quote_style="non_numeric"`` zet ook datums en waar/onwaar tussen
+    aanhalingstekens. Daarom krijgen hier alleen tekst (elke kolom die geen getal, datum, tijd of
+    waar/onwaar is) en de kolomnamen aanhalingstekens, met ``""`` voor een aanhalingsteken in de
+    tekst; de rest schrijft polars zonder. Een lege waarde blijft leeg, lege tekst wordt ``""``.
+    """
+    text_columns = [
+        name
+        for name, dtype in df.schema.items()
+        if not (dtype.is_numeric() or dtype.is_temporal() or dtype in (pl.Boolean, pl.Null))
+    ]
+    quoted = df.with_columns(
+        pl.concat_str(
+            [
+                pl.lit('"'),
+                pl.col(name).cast(pl.String).str.replace_all('"', '""', literal=True),
+                pl.lit('"'),
+            ]
+        ).alias(name)
+        for name in text_columns
+    ).rename({name: _quote(name) for name in df.columns})
+    quoted.write_csv(path, separator=separator, quote_style="never")
