@@ -182,8 +182,9 @@ def _looks_like_prose(filled: pl.Series) -> bool:
     """Vrije tekst: veel waarden met een spatie, of lange waarden; geen code van vaste vorm."""
     text = filled.cast(pl.String)
     with_space = text.str.contains(r"\s").sum() / text.len()
-    mean_length = text.str.len_chars().mean() or 0
-    if with_space <= FREETEXT_MIN_SPACE_SHARE and mean_length < FREETEXT_MIN_MEAN_LENGTH:
+    mean_length = text.str.len_chars().mean()
+    long = isinstance(mean_length, (int, float)) and mean_length >= FREETEXT_MIN_MEAN_LENGTH
+    if with_space <= FREETEXT_MIN_SPACE_SHARE and not long:
         return False
     return not _is_code(text)
 
