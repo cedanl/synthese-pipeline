@@ -464,7 +464,7 @@ def test_data_free_needs_rows(tmp_path, capsys):
     assert (
         main(["synthesize", "--spec", str(spec_path), "--rows", "3", str(tmp_path / "u.csv")]) == 0
     )
-    assert pl.read_csv(tmp_path / "u.csv")["id"].to_list() == [1, 2, 3]
+    assert pl.read_csv(tmp_path / "u.csv", separator=";")["id"].to_list() == [1, 2, 3]
 
 
 def test_synthesize_model_and_spec_are_exclusive(tmp_path):

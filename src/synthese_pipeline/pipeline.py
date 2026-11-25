@@ -30,10 +30,12 @@ from synthese_pipeline.model import (
 from synthese_pipeline.report import build_report, default_report_path, write_report
 from synthese_pipeline.spec import build_draft, load_spec, write_spec
 from synthese_pipeline.storage import (
+    DEFAULT_CSV_SEPARATOR,
+    check_csv_separator,
     is_remote,
     is_single_file_target,
     read_tables,
-    resolve_format,
+    resolve_formats,
     write_tables,
 )
 
@@ -126,6 +128,7 @@ def run_synthesize(
     rows: int | None = None,
     seed: int | None = None,
     fmt: str | None = None,
+    csv_separator: str = DEFAULT_CSV_SEPARATOR,
     source: str | Path | None = None,
     report_path: str | Path | None = None,
     spec: str | Path | None = None,
@@ -136,7 +139,8 @@ def run_synthesize(
     Met ``spec`` in plaats van ``model_path`` komt het model uit alleen de specificatie
     (data-free, zonder model en zonder bron). Met ``source`` wordt de synthetische data ook met
     de echte data vergeleken (verdelingen, letterlijke kopieën). Zonder ``seed`` wordt er een
-    gekozen en in het rapport gezet.
+    gekozen en in het rapport gezet. ``fmt`` is een formaat of ``parquet,csv`` (allebei, bij een
+    lokale map); ``csv_separator`` is ``;`` (standaard) of ``,``.
     """
     if (model_path is None) == (spec is None):
         raise SyntheseError("Geef een model of een specificatie (--spec), niet allebei of geen.")
@@ -144,7 +148,8 @@ def run_synthesize(
         raise SyntheseError("--rows moet minstens 1 zijn.")
     if seed is not None and not 0 <= seed <= MAX_SEED:
         raise SyntheseError(f"--seed moet tussen 0 en {MAX_SEED} liggen.")
-    resolve_format(target, fmt)
+    resolve_formats(target, fmt)
+    check_csv_separator(csv_separator)
     if report_path is None:
         if is_remote(target):
             raise SyntheseError("Geef bij een abfss://-doel met --report op waar het rapport komt.")
@@ -164,7 +169,13 @@ def run_synthesize(
 
     used_seed = seed if seed is not None else secrets.randbelow(MAX_SEED)
     synthetic = synthesize_tables(gmf, rows=rows, seed=used_seed)
-    written = write_tables(synthetic, target, fmt=fmt, storage_options=storage_options)
+    written = write_tables(
+        synthetic,
+        target,
+        fmt=fmt,
+        csv_separator=csv_separator,
+        storage_options=storage_options,
+    )
     log.info("synthetische data geschreven: %d tabel(len)", len(written))
 
     report = build_report(

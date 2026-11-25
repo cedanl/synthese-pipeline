@@ -22,7 +22,7 @@ uv sync
 |---|---|---|
 | Invoer | Eén tabel of een map met tabellen: CSV, Parquet of Delta, ook in OneLake (`abfss://`). SPSS (`.sav`) wordt nog niet gelezen ([#7](https://github.com/cedanl/synthese-pipeline/issues/7)). | `data/01-raw/` (zoals geleverd) of `data/02-prepared/` (voorbewerkt) |
 | Model | Een GMF-bestand (JSON) van metasyn, met per kolom een verdeling | gemaakt in de beveiligde omgeving; alleen dit bestand gaat naar buiten |
-| Uitvoer | Synthetische data: CSV of Parquet bij een bestand als doel, anders per tabel een Delta-tabel (of met `--format` CSV of Parquet), plus een rapport (JSON) | `data/03-output/` of een aparte lakehouse |
+| Uitvoer | Synthetische data, plus een rapport (JSON). Lakehouse: per tabel een Delta-tabel (de standaard). Lokale map: Parquet en CSV met `--format parquet,csv`. CSV volgt de dataconventies: `;` als scheidingsteken, UTF-8, tekst tussen aanhalingstekens (zie [Bron en doel](#bron-en-doel)). | `data/03-output/` of een aparte lakehouse |
 
 **`fit` is de privacygrens.** De tool leest de data in `01-raw` of `02-prepared` zoals de instelling die aanlevert, in de beveiligde omgeving. Alleen het GMF-bestand verlaat die omgeving. `synthesize` en `toon` gebruiken alleen het model, nooit de echte data (behalve `synthesize --source`, en dat draait dan weer binnen). Lees het model na met `toon` voordat het naar buiten gaat (zie [Privacy](#privacy)).
 
@@ -60,8 +60,17 @@ uv run synthese-pipeline synthesize model.json output.csv --rows 1000 --seed 42
 | Doel (`synthesize`) | Wat wordt geschreven |
 |---|---|
 | `uit.csv`, `uit.parquet` | Eén bestand (alleen bij een model met één tabel); rapport: `uit.rapport.json` |
-| een map | Per tabel een Delta-tabel `<map>/<tabel>`; met `--format parquet` of `--format csv` een bestand per tabel; rapport: `<map>/rapport.json` |
-| `abfss://…/Tables` | Per tabel een Delta-tabel; geef het rapport op met `--report` |
+| een map | Per tabel een Delta-tabel `<map>/<tabel>` (standaard); met `--format parquet` of `--format csv` een bestand per tabel, met `--format parquet,csv` allebei (`<tabel>.parquet` en `<tabel>.csv`); rapport: `<map>/rapport.json` |
+| `abfss://…/Tables` | Per tabel een Delta-tabel (alleen Delta); geef het rapport op met `--report` |
+
+| Waar komt de data | Aanbevolen uitvoer |
+|---|---|
+| Een lakehouse (Microsoft Fabric/OneLake, `abfss://`) | Delta: de standaard, zonder `--format` |
+| Een lokale map | Parquet en CSV in één keer: `--format parquet,csv` (zonder `--format` wordt het Delta) |
+
+CSV-uitvoer volgt de [dataconventies](https://github.com/cedanl/.github/tree/main/standards/README.md): UTF-8 zonder BOM, `;` als scheidingsteken en tekst tussen aanhalingstekens (`"Zoë; ""de"" Groot"`); getallen, datums, waar/onwaar en lege waarden staan er zonder. Getallen hebben een decimale punt. Wil je een komma als scheidingsteken, geef dan `--csv-separator ","`; andere tekens zijn niet toegestaan. `--format parquet,csv` kan alleen bij een lokale map, niet bij `uit.csv` of `abfss://`.
+
+**Let op, gewijzigd:** CSV-uitvoer had eerst een komma als scheidingsteken en geen aanhalingstekens. Lees je de uitvoer met polars, geef dan `separator=";"` mee (`pl.read_csv(pad, separator=";")`), of schrijf met `--csv-separator ","`. Deze tool leidt het scheidingsteken zelf af.
 
 Alles wordt gelezen met polars, niet met pandas. Een CSV-bestand wordt eerst als tekst gelezen; daarna krijgt elke kolom het type waar alle ingevulde waarden in passen (geheel getal, kommagetal, datum, waar/onwaar of tekst). Codes met voorloopnullen, zoals `01234`, blijven tekst. Het scheidingsteken (komma, puntkomma of tab) wordt uit de kopregel afgeleid; bij een puntkomma mag een getal een decimale komma hebben. De synthetische tabellen krijgen dezelfde kolomnamen en datatypes als de bron. Bestaande uitvoer wordt overschreven, maar nooit iets buiten het doel: een tabelnaam uit het model wordt een map- of bestandsnaam, dus `synthesize` en `toon` weigeren een model waarin een tabelnaam een pad is (zoals `../bron` of `/data/bron`).
 
