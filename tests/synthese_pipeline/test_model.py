@@ -34,10 +34,12 @@ def test_likert_with_nulls_stays_integer(gmf):
         assert synthetic[column].null_count() > 0
 
 
-def test_short_text_becomes_categorical_not_regex(gmf):
-    var = _var(gmf, "studenten", "geslacht")
-    assert var["distribution"]["name"] == "core.multinoulli"
-    assert var["distribution"]["class_name"] != "RegexDistribution"
+def test_short_text_becomes_categorical_not_regex(gmf, gmf_plain):
+    for fitted in (gmf, gmf_plain):
+        for column in ("geslacht", "opleidingscode"):
+            var = _var(fitted, "studenten", column)
+            assert var["distribution"]["name"] == "core.multinoulli", column
+            assert var["distribution"]["class_name"] != "RegexDistribution", column
 
 
 def test_leading_zero_codes_stay_strings(gmf, tmp_path):

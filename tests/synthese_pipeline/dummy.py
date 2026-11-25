@@ -7,7 +7,7 @@ import datetime as dt
 import numpy as np
 import polars as pl
 
-SENTINEL = "SENTINEL-ZQX-7391"
+SENTINEL = "ZQX7391"
 OUTLIER_AGE = 71
 
 
