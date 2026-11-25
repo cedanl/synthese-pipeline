@@ -1,0 +1,56 @@
+# Voorbeeld van een specificatie voor synthese-pipeline (configuratieformaat van metasyn).
+#
+# Stap 0, data-free: dummydata maken zonder echte data en zonder model.
+#   uv run synthese-pipeline synthesize --spec examples/spec.toml --rows 100 uit.csv
+#
+# Alles hieronder is verzonnen. Zet in een specificatie nooit echte waarden, ook niet in
+# description. Zonder data is per kolom een verdeling nodig (distribution met implements en
+# parameters), behalve bij een sleutel (soort key), een categorische kolom met categorieen,
+# een kolom met faker, en een uitgesloten kolom.
+
+config_version = "1.2"
+name = "studenten"
+n_rows = 100
+
+[[var]]
+name = "studentnummer"
+soort = "key"
+brontype = "Int64"
+description = "Uniek nummer per student, oplopend vanaf 100000."
+distribution = { implements = "core.unique_key", unique = true, parameters = { lower = 100000, consecutive = true } }
+
+[[var]]
+name = "tevredenheid"
+soort = "categorical"
+brontype = "Int64"
+description = "Likert-item: hoe tevreden ben je over je opleiding? 1 = zeer ontevreden, 5 = zeer tevreden."
+categorieen = [1, 2, 3, 4, 5]
+prop_missing = 0.1
+
+[[var]]
+name = "opleidingscode"
+soort = "text"
+brontype = "String"
+description = "Code van de opleiding: vijf cijfers."
+distribution = { implements = "core.regex", parameters = { regex_data = "[0-9]{5}" } }
+
+[[var]]
+name = "inschrijfdatum"
+soort = "date"
+brontype = "Date"
+description = "Datum van inschrijving in studiejaar 2024-2025."
+distribution = { implements = "core.uniform", parameters = { lower = 2024-09-01, upper = 2025-08-31 } }
+
+[[var]]
+name = "gemiddeld_cijfer"
+soort = "continuous"
+brontype = "Float64"
+description = "Gemiddeld cijfer, schaal 1-10."
+distribution = { implements = "core.truncated_normal", parameters = { lower = 1.0, upper = 10.0, mean = 6.8, sd = 0.9 } }
+
+[[var]]
+name = "opmerking"
+soort = "freetext"
+brontype = "String"
+uitgesloten = true
+description = "Vrije tekst van de student; gaat niet in de synthetische data."
