@@ -1,8 +1,12 @@
 """Tests voor de commandoregel: fit, synthesize, toon, rapport en exitcodes."""
 
+import importlib
+import importlib.metadata
 import json
+import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 import polars as pl
 import pytest
@@ -18,6 +22,27 @@ def test_version(capsys):
         main(["--version"])
     assert exc.value.code == 0
     assert __version__ in capsys.readouterr().out
+
+
+def test_version_command_prints_package_version():
+    # Het echte commando uit [project.scripts], niet main(): zo telt ook de installatie mee.
+    command = shutil.which("synthese-pipeline", path=str(Path(sys.executable).parent))
+    assert command is not None
+    out = subprocess.run([command, "--version"], capture_output=True, text=True, check=True)
+    package_version = importlib.metadata.version("synthese-pipeline")
+    assert out.stdout.strip() == f"synthese-pipeline {package_version}"
+
+
+def test_version_has_one_source(monkeypatch):
+    # __version__ komt uit de pakketgegevens (pyproject.toml), niet uit een tweede getal.
+    import synthese_pipeline
+
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: "9.9.9")
+    try:
+        assert importlib.reload(synthese_pipeline).__version__ == "9.9.9"
+    finally:
+        monkeypatch.undo()
+        importlib.reload(synthese_pipeline)
 
 
 @pytest.fixture

@@ -8,7 +8,7 @@ Engine: [metasyn](https://github.com/sodascience/metasyn). Metasyn modelleert el
 
 ## Standards
 
-Follow CEDA technical standards: https://github.com/cedanl/.github/tree/main/standards/README.md
+Follow CEDA technical standards: https://github.com/cedanl/.github/blob/main/docs/standards/index.md
 
 ## Architectuurprincipes
 
