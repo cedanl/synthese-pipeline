@@ -28,4 +28,4 @@ jobs:
         run: uv run pytest
 
       - name: Data-free example
-        run: uv run synthese-pipeline synthesize --spec examples/spec.toml --rows 100 /tmp/out.csv
+        run: uv run synthese-pipeline synthesize --spec examples/spec.toml --rows 100 --format csv /tmp/out

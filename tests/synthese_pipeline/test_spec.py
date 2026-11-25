@@ -354,10 +354,10 @@ def test_init_spec_fit_synthesize(tmp_path, source):
 
 
 def test_example_spec_data_free(tmp_path):
-    output = tmp_path / "uit.parquet"
+    output = tmp_path / "uit"
     args = ["synthesize", "--spec", str(EXAMPLE), "--rows", "100", str(output), "--seed", "5"]
-    assert main(args) == EXIT_OK
-    synthetic = pl.read_parquet(output)
+    assert main([*args, "--format", "parquet"]) == EXIT_OK
+    synthetic = pl.read_parquet(output / "studenten.parquet")
     assert synthetic.height == 100
     assert synthetic.schema == pl.Schema(
         {
@@ -375,23 +375,28 @@ def test_example_spec_data_free(tmp_path):
     dates = synthetic["inschrijfdatum"]
     assert dates.min() >= dt.date(2024, 9, 1) and dates.max() <= dt.date(2025, 8, 31)
     assert synthetic["gemiddeld_cijfer"].is_between(1.0, 10.0).all()
-    report = json.loads((tmp_path / "uit.rapport.json").read_text())
+    results_table = pl.read_parquet(output / "resultaten.parquet")
+    assert results_table.height == 100
+    assert results_table["studentnummer"].is_in(synthetic["studentnummer"].implode()).all()
+    report = json.loads((output / "rapport.json").read_text())
     assert report["exitcode"] == EXIT_OK
     assert report["data_free"] is True
     assert report["structuur"]["gelijk"] is True
     assert report["tabellen"]["studenten"]["uitgesloten"] == ["opmerking"]
     assert report["tabellen"]["studenten"]["rijen"] == 100
+    assert [entry["wezen"] for entry in report["relaties"]] == [0]
 
 
 def test_data_free_is_reproducible_and_uses_n_rows(tmp_path):
-    for name, seed in (("a.csv", "7"), ("b.csv", "7"), ("c.csv", "8")):
-        assert (
-            main(["synthesize", "--spec", str(EXAMPLE), str(tmp_path / name), "--seed", seed]) == 0
-        )
-    assert (tmp_path / "a.csv").read_bytes() == (tmp_path / "b.csv").read_bytes()
-    assert (tmp_path / "a.csv").read_bytes() != (tmp_path / "c.csv").read_bytes()
-    # n_rows = 100 in het voorbeeld; plus de kopregel.
-    assert len((tmp_path / "a.csv").read_text().splitlines()) == 101
+    for name, seed in (("a", "7"), ("b", "7"), ("c", "8")):
+        args = ["synthesize", "--spec", str(EXAMPLE), str(tmp_path / name), "--seed", seed]
+        assert main([*args, "--format", "csv"]) == 0
+    for table in ("studenten.csv", "resultaten.csv"):
+        assert (tmp_path / "a" / table).read_bytes() == (tmp_path / "b" / table).read_bytes()
+        assert (tmp_path / "a" / table).read_bytes() != (tmp_path / "c" / table).read_bytes()
+    # n_rows = 100 en 300 in het voorbeeld; plus de kopregel.
+    assert len((tmp_path / "a" / "studenten.csv").read_text().splitlines()) == 101
+    assert len((tmp_path / "a" / "resultaten.csv").read_text().splitlines()) == 301
 
 
 def test_data_free_multi_table(tmp_path):
